@@ -1,0 +1,12 @@
+import { serve } from "@hono/node-server";
+import { serveStatic } from "@hono/node-server/serve-static";
+import { createApp } from "./app.js";
+import { MaxSessions } from "../src/max/session.js";
+const sessions = new MaxSessions();
+const app = createApp(sessions);
+app.all("/api/*", c => c.json({ ok: false, error: "Неизвестный запрос Max." }, 404));
+app.get("*", serveStatic({ root: "./dist/client" }));
+app.get("*", serveStatic({ path: "./dist/client/index.html" }));
+const server = serve({ fetch: app.fetch, hostname: process.env.HOST || "127.0.0.1", port: Number(process.env.PORT || 18792) });
+console.log("Max client server started");
+for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => { sessions.close(); server.close(); });

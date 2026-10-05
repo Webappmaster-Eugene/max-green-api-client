@@ -1,0 +1,2 @@
+* { box-sizing: border-box; } html, body, #root { margin: 0; height: 100%; } body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; } button, input, textarea { font: inherit; }
+@media (prefers-color-scheme: dark) { :root { --tg-theme-bg-color: #18212c; --tg-theme-text-color: #e5eaf1; --tg-theme-hint-color: #9daabd; --tg-theme-secondary-bg-color: #101821; } }
