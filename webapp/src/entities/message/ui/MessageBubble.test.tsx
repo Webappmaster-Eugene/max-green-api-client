@@ -84,3 +84,33 @@ it("shows a clear error when a file cannot be downloaded", async () => {
     "Срок ссылки истёк",
   );
 });
+
+it("downloads documents as binary data regardless of the provider MIME type", async () => {
+  vi.mocked(requestMedia).mockResolvedValue(new Blob(["<html>fixture</html>"]));
+  vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+  render(
+    <MantineProvider env="test">
+      <MessageBubble
+        actions={null}
+        connectionId="connection"
+        message={{
+          id: "doc",
+          chatId: "100",
+          text: "",
+          direction: "incoming",
+          timestamp: Date.now(),
+          attachment: {
+            kind: "document",
+            fileName: "page.html",
+            mimeType: "text/html",
+            available: true,
+          },
+        }}
+      />
+    </MantineProvider>,
+  );
+  await userEvent.click(screen.getByRole("button", { name: "Скачать" }));
+  expect((vi.mocked(URL.createObjectURL).mock.calls[0][0] as Blob).type).toBe(
+    "application/octet-stream",
+  );
+});

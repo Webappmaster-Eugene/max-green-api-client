@@ -57,7 +57,11 @@ export function MessageBubble({
         throw new Error("Вложение превышает 10 МБ.");
       if (!request.signal.aborted) {
         const objectUrl = URL.createObjectURL(
-          new Blob([blob], { type: message.attachment!.mimeType }),
+          new Blob([blob], {
+            type: download
+              ? "application/octet-stream"
+              : message.attachment!.mimeType,
+          }),
         );
         if (download) {
           const link = document.createElement("a");
