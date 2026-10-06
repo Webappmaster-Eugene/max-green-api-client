@@ -14,13 +14,10 @@ test("user guide is readable without opening access to MAX", async ({
 }) => {
   await page.goto("/help");
   await expect(
-    page.getByRole("heading", {
-      name: "Max: руководство пользователя",
-      exact: true,
-    }),
+    page.getByText("Max: руководство пользователя.", { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByRole("heading", { name: "Для администратора", exact: true }),
+    page.getByText("Для администратора.", { exact: true }),
   ).toBeVisible();
   expect(
     (
