@@ -5,3 +5,6 @@ dist/
 test-results/
 playwright-report/
 *.tsbuildinfo
+data/
+.admin-credentials
+.env.local.*

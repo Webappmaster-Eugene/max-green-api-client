@@ -1,0 +1,8 @@
+node_modules
+dist
+data
+.env*
+.admin-credentials
+test-results
+playwright-report
+package-lock.json

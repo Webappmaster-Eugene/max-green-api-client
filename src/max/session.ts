@@ -1,286 +1,803 @@
-import { randomUUID } from "node:crypto";
-import { z } from "zod";
+import { createHash, randomUUID } from "node:crypto";
+import type { z } from "zod";
 import { GreenMaxClient } from "./client.js";
 import { MaxError } from "./error.js";
-import { MAX_TEXT_LENGTH } from "../shared/max.js";
-import { maxConnectSchema, maxSendSchema } from "./schema.js";
-import type { MaxChatDto, MaxContactDto, MaxConnectInput, MaxMessageDto, MaxMessageStatus, MaxSendInput, MaxSessionDto } from "../shared/max.js";
+import { normalizeHistory, normalizeNotification } from "./message.js";
+import { safeFileName, safeMediaUrl, validateUpload } from "./media.js";
+import {
+  maxConnectSchema,
+  maxSendSchema,
+  maxUploadSchema,
+} from "../../contracts/max.js";
+import {
+  stateSchema,
+  settingsSchema,
+  directorySchema,
+  accountResultSchema,
+  historySchema,
+  notificationSchema,
+  sendResultSchema,
+  ackSchema,
+  forwardResultSchema,
+  readResultSchema,
+  deleteResultSchema,
+} from "../../contracts/provider.js";
+import type {
+  MaxChatDto,
+  MaxConnectInput,
+  MaxMessageDto,
+  MaxMessageStatus,
+  MaxSendInput,
+  MaxSessionDto,
+  MaxUploadInput,
+  MaxEditInput,
+  MaxDeleteInput,
+  MaxForwardInput,
+  MaxReactionInput,
+  MessageTarget,
+} from "../../types/max.js";
+import type {
+  MaxSession,
+  SendAttempt,
+  MediaSource,
+} from "../../types/internal.js";
+import type { NormalizedMessage } from "../../types/provider.js";
 
 const SESSION_MS = 8 * 60 * 60 * 1000;
 const MAX_MESSAGES = 10000;
 const MAX_CHATS = 10000;
-const UNKNOWN_SEND = "Результат отправки неизвестен. Проверьте переписку в MAX перед новой отправкой: сообщение могло попасть в очередь.";
+const UNKNOWN_SEND =
+  "Результат отправки неизвестен. Проверьте переписку в MAX перед новой отправкой: сообщение могло попасть в очередь.";
+const RANK = { queued: 0, sent: 1, delivered: 2, read: 3, failed: 4 };
 
-function record(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+function checked<T>(schema: z.ZodType<T>, value: unknown): T {
+  const result = schema.safeParse(value);
+  if (!result.success)
+    throw new MaxError("GREEN-API вернул некорректный ответ.", "unavailable");
+  return result.data;
 }
-function str(value: unknown, limit = 200): string { return typeof value === "string" ? value.slice(0, limit) : ""; }
-function fail(message: string, code: "invalid" | "unavailable" = "invalid"): never { throw new MaxError(message, code); }
+function fail(message: string): never {
+  throw new MaxError(message, "invalid");
+}
 export function maxPhone(raw: string): string {
-  if (!/^[+\d\s()-]+$/.test(raw)) fail("Введите номер телефона в международном формате.");
+  if (!/^[+\d\s()-]+$/.test(raw))
+    fail("Введите номер телефона в международном формате.");
   const digits = raw.replace(/\D/g, "");
-  if (!/^(7\d{10}|375\d{9})$/.test(digits)) fail("Для поиска по номеру поддерживаются РФ (+7) и Беларусь (+375).");
+  if (!/^(7\d{10}|375\d{9})$/.test(digits))
+    fail("Для поиска по номеру поддерживаются РФ (+7) и Беларусь (+375).");
   return digits;
 }
 
-interface SendAttempt { chatId: string; text: string; message?: MaxMessageDto; error?: MaxError }
-interface Session {
-  client: GreenMaxClient;
-  dto: MaxSessionDto;
-  busy: boolean;
-  lastSendAt: number;
-  attempts: Map<string, SendAttempt>;
-  historyCounts: Map<string, number>;
-}
-
-/** One consumer per instance, bounded RAM, no credentials in persistence or snapshots. */
 export class MaxSessions {
-  private readonly sessions = new Map<number, Session>();
-  private readonly connecting = new Set<number>();
+  private readonly sessions = new Map<number, MaxSession>();
+  private readonly connecting = new Map<number, GreenMaxClient>();
   private readonly claimed = new Set<string>();
+  private readonly generations = new Map<number, number>();
   private readonly timer: ReturnType<typeof setInterval>;
   constructor(
-    private readonly makeClient = (credentials: MaxConnectInput) => new GreenMaxClient(credentials),
+    private readonly makeClient = (credentials: MaxConnectInput) =>
+      new GreenMaxClient(credentials),
     private readonly now = Date.now,
   ) {
-    this.timer = setInterval(() => this.sweep(), 60_000);
+    this.timer = setInterval(() => this.sweep(), 60000);
     this.timer.unref();
   }
-  close(): void { clearInterval(this.timer); this.sessions.clear(); }
-  private sweep(): void {
-    for (const [owner, s] of this.sessions) if (!s.busy && s.dto.expiresAt <= this.now()) this.sessions.delete(owner);
+  close(): void {
+    clearInterval(this.timer);
+    for (const s of this.sessions.values()) s.client.close();
+    for (const c of this.connecting.values()) c.close();
+    this.sessions.clear();
+    this.connecting.clear();
+    this.claimed.clear();
   }
-  private session(owner: number, connectionId?: string): Session {
+  disconnectOwner(owner: number): void {
+    this.generations.set(owner, (this.generations.get(owner) ?? 0) + 1);
+    this.sessions.get(owner)?.client.close();
+    this.connecting.get(owner)?.close();
+    this.sessions.delete(owner);
+  }
+  private sweep(): void {
+    for (const [owner, s] of this.sessions)
+      if (s.dto.expiresAt <= this.now()) this.disconnectOwner(owner);
+  }
+  private session(owner: number, connectionId?: string): MaxSession {
     this.sweep();
     const s = this.sessions.get(owner);
-    if (!s || s.dto.expiresAt <= this.now() || (connectionId && connectionId !== s.dto.connectionId)) {
-      throw new MaxError("Подключение MAX завершено. Подключите аккаунт заново.", "not_found");
-    }
+    if (!s || (connectionId && connectionId !== s.dto.connectionId))
+      throw new MaxError(
+        "Подключение MAX завершено. Подключите аккаунт заново.",
+        "not_found",
+      );
     return s;
   }
   status(owner: number): MaxSessionDto | null {
     this.sweep();
     const s = this.sessions.get(owner);
-    return s && s.dto.expiresAt > this.now() ? structuredClone(s.dto) : null;
+    return s ? structuredClone(s.dto) : null;
   }
-  private async use<T>(owner: number, connectionId: string, work: (s: Session) => Promise<T>): Promise<T> {
+  private async use<T>(
+    owner: number,
+    connectionId: string,
+    work: (s: MaxSession) => Promise<T>,
+  ): Promise<T> {
     const s = this.session(owner, connectionId);
-    if (s.busy) throw new MaxError("Предыдущий запрос MAX ещё выполняется. Повторите через несколько секунд.", "limit");
+    if (s.busy)
+      throw new MaxError(
+        "Предыдущий запрос MAX ещё выполняется. Повторите через несколько секунд.",
+        "limit",
+      );
     s.busy = true;
-    try { return await work(s); } finally { s.busy = false; }
+    try {
+      return await work(s);
+    } finally {
+      s.busy = false;
+    }
   }
   async connect(owner: number, input: MaxConnectInput): Promise<MaxSessionDto> {
     const parsed = maxConnectSchema.safeParse(input);
-    if (!parsed.success) fail("Проверьте реквизиты GREEN-API и согласие владельца аккаунта.");
-    const credentials = { ...parsed.data, idInstance: BigInt(parsed.data.idInstance).toString() };
-    const client = this.makeClient(credentials);
+    if (!parsed.success)
+      fail("Проверьте реквизиты GREEN-API и согласие владельца аккаунта.");
+    const credentials = {
+      ...parsed.data,
+      idInstance: BigInt(parsed.data.idInstance).toString(),
+    };
     this.sweep();
-    if (this.connecting.has(owner) || this.sessions.get(owner)?.busy) throw new MaxError("Дождитесь предыдущего запроса MAX.", "limit");
-    if (this.sessions.has(owner)) fail("Сначала отключите текущий аккаунт MAX.");
-    if (this.sessions.size + this.connecting.size >= 50) throw new MaxError("Сейчас слишком много подключений MAX. Попробуйте позже.", "limit");
-    // idInstance is global in GREEN-API, regardless of which cluster alias is used.
+    if (this.connecting.has(owner) || this.sessions.has(owner))
+      fail("Сначала отключите текущий аккаунт или дождитесь подключения.");
+    if (this.sessions.size + this.connecting.size >= 50)
+      throw new MaxError("Сейчас слишком много подключений MAX.", "limit");
     const instance = credentials.idInstance;
-    if (this.claimed.has(instance) || [...this.sessions.values()].some(s => s.dto.idInstance === instance)) {
-      throw new MaxError("Этот инстанс уже подключён в Советнике. Используйте отдельный инстанс.", "forbidden");
-    }
-    this.connecting.add(owner); this.claimed.add(instance);
+    if (
+      this.claimed.has(instance) ||
+      [...this.sessions.values()].some((s) => s.dto.idInstance === instance)
+    )
+      throw new MaxError(
+        "Этот инстанс уже подключён. Используйте отдельный инстанс.",
+        "forbidden",
+      );
+    const generation = this.generations.get(owner) ?? 0;
+    const client = this.makeClient(credentials);
+    this.connecting.set(owner, client);
+    this.claimed.add(instance);
     try {
-      const state = record(await client.call("getStateInstance"));
-      if (state.stateInstance !== "authorized") fail("Авторизуйте инстанс MAX в кабинете GREEN-API; аккаунт должен быть без блокировок.");
-      const settings = record(await client.call("getSettings"));
-      if (settings.typeInstance !== "v3") fail("Выберите инстанс MAX, а не WhatsApp или Telegram.");
-      if (settings.webhookUrl !== "" || settings.incomingWebhook !== "yes" || settings.outgoingWebhook !== "yes") {
-        fail("В кабинете GREEN-API очистите webhookUrl и включите входящие сообщения и статусы отправки. Настройки применяются примерно за минуту.");
-      }
+      const state = checked(stateSchema, await client.call("getStateInstance"));
+      if (state.stateInstance !== "authorized")
+        fail("Авторизуйте инстанс MAX в кабинете GREEN-API.");
+      const settings = checked(
+        settingsSchema,
+        await client.call("getSettings"),
+      );
+      if (settings.typeInstance !== "v3")
+        fail("Выберите инстанс MAX, а не WhatsApp или Telegram.");
+      if (
+        settings.webhookUrl ||
+        settings.incomingWebhook !== "yes" ||
+        settings.outgoingWebhook !== "yes"
+      )
+        fail(
+          "Очистите webhookUrl и включите входящие сообщения и статусы отправки в GREEN-API.",
+        );
+      if (generation !== (this.generations.get(owner) ?? 0))
+        throw new MaxError("Подключение отменено.", "forbidden");
       const dto: MaxSessionDto = {
-        connectionId: randomUUID(), idInstance: instance, account: str(settings.wid),
-        expiresAt: this.now() + SESSION_MS, chats: [], contacts: [], messages: [],
+        connectionId: randomUUID(),
+        idInstance: instance,
+        account: (settings.wid ?? "").slice(0, 200),
+        expiresAt: this.now() + SESSION_MS,
+        chats: [],
+        contacts: [],
+        messages: [],
+        canUpload: !!credentials.mediaUrl,
       };
-      this.sessions.set(owner, { client, dto, busy: false, lastSendAt: -Infinity, attempts: new Map(), historyCounts: new Map() });
-      const session = this.sessions.get(owner)!;
-      session.busy = true;
-      try { await this.syncDirectory(session); }
-      catch { dto.syncWarning = "Контакты пока не загрузились. Нажмите «Обновить»; у GREEN-API синхронизация может занять несколько минут."; }
-      finally { session.busy = false; }
+      const session: MaxSession = {
+        client,
+        dto,
+        busy: true,
+        lastSendAt: -Infinity,
+        attempts: new Map(),
+        historyCounts: new Map(),
+        media: new Map(),
+      };
+      this.sessions.set(owner, session);
+      try {
+        await this.syncDirectory(session);
+      } catch {
+        dto.syncWarning =
+          "Контакты пока не загрузились. Обновите список через несколько минут.";
+      } finally {
+        session.busy = false;
+      }
+      if (generation !== (this.generations.get(owner) ?? 0))
+        throw new MaxError("Подключение отменено.", "forbidden");
       return structuredClone(dto);
-    } finally { this.connecting.delete(owner); this.claimed.delete(instance); }
+    } catch (error) {
+      client.close();
+      this.sessions.delete(owner);
+      throw error;
+    } finally {
+      this.connecting.delete(owner);
+      this.claimed.delete(instance);
+    }
   }
   disconnect(owner: number, connectionId: string): void {
-    const s = this.session(owner, connectionId);
-    if (s.busy) throw new MaxError("Дождитесь завершения запроса MAX и отключитесь ещё раз.", "limit");
-    this.sessions.delete(owner);
+    this.session(owner, connectionId);
+    this.disconnectOwner(owner);
   }
-  async openChat(owner: number, connectionId: string, rawPhone: string): Promise<MaxChatDto> {
+  private chat(s: MaxSession, chatId: string): MaxChatDto {
+    let chat = s.dto.chats.find((c) => c.id === chatId);
+    if (!chat) {
+      const contact = s.dto.contacts.find((c) => c.id === chatId);
+      if (!contact) fail("Выберите чат или контакт из списка.");
+      if (s.dto.chats.length >= MAX_CHATS) fail("Достигнут лимит чатов.");
+      chat = { ...contact };
+      s.dto.chats.push(chat);
+    }
+    return chat;
+  }
+  private message(s: MaxSession, chatId: string, id: string): MaxMessageDto {
+    this.chat(s, chatId);
+    const message = s.dto.messages.find(
+      (m) => m.chatId === chatId && m.id === id,
+    );
+    if (!message || message.deleted)
+      fail("Сообщение не найдено или удалено. Обновите историю.");
+    return message;
+  }
+  async openChat(
+    owner: number,
+    connectionId: string,
+    rawPhone: string,
+  ): Promise<MaxChatDto> {
     const phone = maxPhone(rawPhone);
-    return this.use(owner, connectionId, async s => {
-      const existing = s.dto.chats.find(c => c.phone === phone);
-      if (existing) return { ...existing };
-      if (s.dto.chats.length >= MAX_CHATS) fail("Достигнут лимит списка чатов.");
-      const answer = record(await s.client.call("checkAccount", "POST", { phoneNumber: Number(phone) }));
-      if (answer.exist === false) fail("Аккаунт MAX не найден. Проверьте номер и настройки поиска получателя.");
-      const id = str(answer.chatId, 30);
-      if (answer.exist !== true || !/^-?\d+$/.test(id)) fail("Не удалось найти получателя. Проверьте настройки приватности MAX и лимиты поиска.");
-      const chat = s.dto.chats.find(c => c.id === id);
-      if (chat) { chat.phone = phone; return { ...chat }; }
-      const created = { id, title: `+${phone}`, phone };
+    return this.use(owner, connectionId, async (s) => {
+      const existing = [...s.dto.chats, ...s.dto.contacts].find(
+        (c) => c.phone === phone,
+      );
+      if (existing) return { ...this.chat(s, existing.id) };
+      const answer = checked(
+        accountResultSchema,
+        await s.client.call("checkAccount", "POST", {
+          phoneNumber: Number(phone),
+        }),
+      );
+      if (!answer.exist || !answer.chatId)
+        fail(
+          "Аккаунт не найден. Проверьте номер, приватность получателя и квоты GREEN-API.",
+        );
+      const chat = s.dto.chats.find((c) => c.id === answer.chatId);
+      if (chat) {
+        chat.phone = phone;
+        return { ...chat };
+      }
+      if (s.dto.chats.length >= MAX_CHATS) fail("Достигнут лимит чатов.");
+      const created: MaxChatDto = {
+        id: answer.chatId,
+        title: `+${phone}`,
+        phone,
+        type: "user",
+      };
       s.dto.chats.push(created);
       return { ...created };
     });
   }
-  async send(owner: number, input: MaxSendInput): Promise<MaxMessageDto> {
-    const parsed = maxSendSchema.safeParse(input);
-    if (!parsed.success) fail("Выберите чат и введите текст до 4000 символов.");
-    const a = parsed.data;
-    return this.use(owner, a.connectionId, async s => {
-      const previous = s.attempts.get(a.requestId);
-      if (previous) {
-        if (previous.chatId !== a.chatId || previous.text !== a.text) fail("Этот запрос уже использован для другого сообщения.");
-        if (previous.error) throw previous.error;
-        return { ...previous.message! };
-      }
-      if (!s.dto.chats.some(c => c.id === a.chatId)) fail("Сначала выберите чат или контакт.");
-      if (s.attempts.size >= 300) fail("Достигнут лимит отправок этой сессии. Подключите аккаунт заново.");
-      if (this.now() - s.lastSendAt < 3000) throw new MaxError("Подождите 3 секунды между отправками.", "limit");
-      const state = record(await s.client.call("getStateInstance"));
-      if (state.stateInstance !== "authorized") fail("Инстанс MAX не авторизован или ограничен. Отправка остановлена.");
-      const attempt: SendAttempt = { chatId: a.chatId, text: a.text };
-      s.attempts.set(a.requestId, attempt);
-      s.lastSendAt = this.now();
-      let result: unknown;
-      try { result = await s.client.call("sendMessage", "POST", { chatId: a.chatId, message: a.text }); }
-      catch (err) {
-        if (err instanceof MaxError && ["limit", "forbidden"].includes(err.code)) {
-          s.attempts.delete(a.requestId);
-          throw err;
-        }
-        attempt.error = new MaxError(UNKNOWN_SEND, "unavailable");
-        throw attempt.error;
-      }
-      const id = str(record(result).idMessage);
-      if (!id) { attempt.error = new MaxError(UNKNOWN_SEND, "unavailable"); throw attempt.error; }
-      const message: MaxMessageDto = { id, chatId: a.chatId, text: a.text, direction: "outgoing", timestamp: this.now(), status: "queued" };
+  private async sendOnce(
+    s: MaxSession,
+    requestId: string,
+    signature: string,
+    action: () => Promise<MaxMessageDto>,
+  ): Promise<MaxMessageDto> {
+    const previous = s.attempts.get(requestId);
+    if (previous) {
+      if (previous.signature !== signature)
+        fail("Этот запрос уже использован для другого сообщения.");
+      if (previous.error) throw previous.error;
+      return { ...previous.message! };
+    }
+    if (s.attempts.size >= 300)
+      fail("Достигнут лимит отправок сессии. Подключитесь заново.");
+    if (this.now() - s.lastSendAt < 3000)
+      throw new MaxError("Подождите 3 секунды между отправками.", "limit");
+    const state = checked(stateSchema, await s.client.call("getStateInstance"));
+    if (state.stateInstance !== "authorized")
+      fail("Инстанс не авторизован. Отправка остановлена.");
+    const attempt: SendAttempt = { signature };
+    s.attempts.set(requestId, attempt);
+    s.lastSendAt = this.now();
+    try {
+      const message = await action();
       attempt.message = message;
-      this.addMessage(s, message);
+      this.addMessage(s, { message });
       return { ...message };
+    } catch (error) {
+      if (
+        error instanceof MaxError &&
+        ["limit", "forbidden"].includes(error.code)
+      ) {
+        s.attempts.delete(requestId);
+        throw error;
+      }
+      attempt.error = new MaxError(UNKNOWN_SEND, "unavailable");
+      throw attempt.error;
+    }
+  }
+  async send(owner: number, input: MaxSendInput): Promise<MaxMessageDto> {
+    const a = maxSendSchema.parse(input);
+    return this.use(owner, a.connectionId, async (s) => {
+      this.chat(s, a.chatId);
+      const quote = a.quotedMessageId
+        ? this.message(s, a.chatId, a.quotedMessageId)
+        : undefined;
+      return this.sendOnce(
+        s,
+        a.requestId,
+        JSON.stringify(["text", a.chatId, a.text, a.quotedMessageId]),
+        async () => {
+          const result = checked(
+            sendResultSchema,
+            await s.client.call("sendMessage", "POST", {
+              chatId: a.chatId,
+              message: a.text,
+              ...(a.quotedMessageId
+                ? { quotedMessageId: a.quotedMessageId }
+                : {}),
+            }),
+          );
+          return {
+            id: result.idMessage,
+            chatId: a.chatId,
+            text: a.text,
+            direction: "outgoing",
+            timestamp: this.now(),
+            status: "queued",
+            quote: quote
+              ? { id: quote.id, text: quote.text, sender: quote.sender }
+              : undefined,
+          };
+        },
+      );
     });
   }
-  private addMessage(s: Session, message: MaxMessageDto, notify = false): void {
-    const previous = s.dto.messages.find(m => m.id === message.id && m.chatId === message.chatId && m.direction === message.direction);
+  async upload(
+    owner: number,
+    input: MaxUploadInput,
+    file: File,
+  ): Promise<MaxMessageDto> {
+    const a = maxUploadSchema.parse(input);
+    validateUpload(file);
+    const hash = createHash("sha256")
+      .update(new Uint8Array(await file.arrayBuffer()))
+      .digest("hex");
+    return this.use(owner, a.connectionId, async (s) => {
+      this.chat(s, a.chatId);
+      if (!s.dto.canUpload) fail("Укажите mediaUrl в настройках подключения.");
+      const quote = a.quotedMessageId
+        ? this.message(s, a.chatId, a.quotedMessageId)
+        : undefined;
+      return this.sendOnce(
+        s,
+        a.requestId,
+        JSON.stringify([
+          "file",
+          a.chatId,
+          hash,
+          file.name,
+          a.caption,
+          a.quotedMessageId,
+        ]),
+        async () => {
+          const form = new FormData();
+          form.set("chatId", a.chatId);
+          form.set("file", file, safeFileName(file.name));
+          form.set("fileName", safeFileName(file.name));
+          if (a.caption) form.set("caption", a.caption);
+          if (a.quotedMessageId) form.set("quotedMessageId", a.quotedMessageId);
+          const result = checked(sendResultSchema, await s.client.upload(form));
+          const mediaUrl = safeMediaUrl(result.urlFile);
+          const message: MaxMessageDto = {
+            id: result.idMessage,
+            chatId: a.chatId,
+            text: a.caption,
+            direction: "outgoing",
+            timestamp: this.now(),
+            status: "queued",
+            attachment: {
+              kind: file.type.startsWith("image/")
+                ? "image"
+                : file.type.startsWith("video/")
+                  ? "video"
+                  : file.type.startsWith("audio/")
+                    ? "audio"
+                    : "document",
+              fileName: safeFileName(file.name),
+              mimeType: file.type || "application/octet-stream",
+              available: !!mediaUrl,
+            },
+            quote: quote
+              ? { id: quote.id, text: quote.text, sender: quote.sender }
+              : undefined,
+          };
+          if (mediaUrl) s.media.set(`${a.chatId}:${message.id}`, mediaUrl);
+          return message;
+        },
+      );
+    });
+  }
+  async edit(owner: number, a: MaxEditInput): Promise<MaxSessionDto> {
+    return this.use(owner, a.connectionId, async (s) => {
+      const m = this.message(s, a.chatId, a.messageId);
+      if (
+        m.direction !== "outgoing" ||
+        m.attachment ||
+        this.now() - m.timestamp > 86400000 ||
+        m.status === "queued" ||
+        m.status === "failed"
+      )
+        fail(
+          "Редактировать можно отправленный исходящий текст в течение 24 часов.",
+        );
+      checked(
+        sendResultSchema,
+        await s.client.call("editMessage", "POST", {
+          chatId: a.chatId,
+          idMessage: m.id,
+          message: a.text,
+        }),
+      );
+      m.text = a.text;
+      m.edited = true;
+      this.updatePreview(s, m);
+      return structuredClone(s.dto);
+    });
+  }
+  async delete(owner: number, a: MaxDeleteInput): Promise<MaxSessionDto> {
+    return this.use(owner, a.connectionId, async (s) => {
+      const m = this.message(s, a.chatId, a.messageId);
+      if (
+        m.direction !== "outgoing" ||
+        m.status === "queued" ||
+        m.status === "failed"
+      )
+        fail("Удалять можно только отправленные исходящие сообщения.");
+      checked(
+        deleteResultSchema,
+        await s.client.call("deleteMessage", "POST", {
+          chatId: a.chatId,
+          idMessage: m.id,
+          onlySenderDelete: a.onlySenderDelete,
+        }),
+      );
+      m.deleted = true;
+      m.text = "Сообщение удалено";
+      m.attachment = undefined;
+      m.quote = undefined;
+      s.media.delete(`${m.chatId}:${m.id}`);
+      this.updatePreview(s, m);
+      return structuredClone(s.dto);
+    });
+  }
+  async forward(owner: number, a: MaxForwardInput): Promise<MaxMessageDto> {
+    return this.use(owner, a.connectionId, async (s) => {
+      const source = this.message(s, a.chatId, a.messageId);
+      this.chat(s, a.targetChatId);
+      return this.sendOnce(
+        s,
+        a.requestId,
+        JSON.stringify(["forward", a.chatId, a.messageId, a.targetChatId]),
+        async () => {
+          const result = checked(
+            forwardResultSchema,
+            await s.client.call("forwardMessages", "POST", {
+              chatId: a.targetChatId,
+              chatIdFrom: a.chatId,
+              messages: [a.messageId],
+            }),
+          );
+          const message: MaxMessageDto = {
+            ...source,
+            id: result.messages[0],
+            chatId: a.targetChatId,
+            direction: "outgoing",
+            timestamp: this.now(),
+            status: "queued",
+            forwarded: true,
+            myReaction: undefined,
+            sender: undefined,
+          };
+          const media = s.media.get(`${a.chatId}:${a.messageId}`);
+          if (media) s.media.set(`${a.targetChatId}:${message.id}`, media);
+          return message;
+        },
+      );
+    });
+  }
+  async react(owner: number, a: MaxReactionInput): Promise<MaxSessionDto> {
+    return this.use(owner, a.connectionId, async (s) => {
+      const message = this.message(s, a.chatId, a.messageId);
+      checked(
+        sendResultSchema,
+        await s.client.call("sendReaction", "POST", {
+          chatId: a.chatId,
+          idMessage: a.messageId,
+          reaction: a.reaction,
+        }),
+      );
+      message.myReaction = a.reaction;
+      return structuredClone(s.dto);
+    });
+  }
+  async read(
+    owner: number,
+    connectionId: string,
+    chatId: string,
+  ): Promise<MaxSessionDto> {
+    return this.use(owner, connectionId, async (s) => {
+      const chat = this.chat(s, chatId);
+      checked(
+        readResultSchema,
+        await s.client.call("readChat", "POST", { chatId }),
+      );
+      chat.unread = 0;
+      return structuredClone(s.dto);
+    });
+  }
+  media(owner: number, target: MessageTarget): MediaSource {
+    const s = this.session(owner, target.connectionId);
+    const message = this.message(s, target.chatId, target.messageId);
+    const url = s.media.get(`${target.chatId}:${target.messageId}`);
+    if (!url || !message.attachment)
+      throw new MaxError(
+        "Вложение пока недоступно. Обновите историю.",
+        "not_found",
+      );
+    return { url, message: structuredClone(message) };
+  }
+  private updatePreview(s: MaxSession, m: MaxMessageDto): void {
+    const chat = s.dto.chats.find((c) => c.id === m.chatId);
+    if (chat && (!chat.lastTimestamp || m.timestamp >= chat.lastTimestamp)) {
+      chat.lastMessage = m.text || m.attachment?.fileName;
+      chat.lastTimestamp = m.timestamp;
+    }
+  }
+  private addMessage(
+    s: MaxSession,
+    normalized: NormalizedMessage,
+    notify = false,
+  ): void {
+    const m = normalized.message;
+    if (normalized.mediaUrl)
+      s.media.set(`${m.chatId}:${m.id}`, normalized.mediaUrl);
+    const previous = s.dto.messages.find(
+      (p) =>
+        p.id === m.id && p.chatId === m.chatId && p.direction === m.direction,
+    );
     if (previous) {
-      if (message.status) {
-        const rank = { queued: 0, sent: 1, delivered: 2, read: 3, failed: 4 };
-        if (rank[message.status] > rank[previous.status ?? "queued"]) previous.status = message.status;
-      }
+      const status =
+        previous.status && RANK[previous.status] > RANK[m.status ?? "queued"]
+          ? previous.status
+          : (m.status ?? previous.status);
+      if (!previous.deleted)
+        Object.assign(previous, m, {
+          status,
+          edited: previous.edited || m.edited,
+        });
       return;
     }
-    s.dto.messages.push(message);
+    s.dto.messages.push(m);
     s.dto.messages.sort((a, b) => a.timestamp - b.timestamp);
-    s.dto.messages = s.dto.messages.slice(-MAX_MESSAGES);
-    const chat = s.dto.chats.find(c => c.id === message.chatId);
-    if (chat) {
-      if (!chat.lastTimestamp || message.timestamp >= chat.lastTimestamp) {
-        chat.lastMessage = message.text; chat.lastTimestamp = message.timestamp;
-      }
-      if (notify && message.direction === "incoming") chat.unread = (chat.unread ?? 0) + 1;
+    if (s.dto.messages.length > MAX_MESSAGES) {
+      s.dto.messages = s.dto.messages.slice(-MAX_MESSAGES);
+      const keep = new Set(s.dto.messages.map((p) => `${p.chatId}:${p.id}`));
+      for (const key of s.media.keys()) if (!keep.has(key)) s.media.delete(key);
     }
+    this.updatePreview(s, m);
+    const chat = s.dto.chats.find((c) => c.id === m.chatId);
+    if (notify && chat && m.direction === "incoming")
+      chat.unread = (chat.unread ?? 0) + 1;
   }
-  private directory(raw: unknown): MaxContactDto[] {
-    if (!Array.isArray(raw)) fail("GREEN-API не вернул список контактов.", "unavailable");
-    return raw.slice(0, MAX_CHATS).flatMap(value => {
-      const row = record(value); const id = str(row.chatId, 30);
-      if (!/^-?\d+$/.test(id)) return [];
-      const phone = typeof row.phoneNumber === "number" && Number.isSafeInteger(row.phoneNumber) && row.phoneNumber > 0
-        ? String(row.phoneNumber) : typeof row.phoneNumber === "string" && /^\d{7,15}$/.test(row.phoneNumber) ? row.phoneNumber : undefined;
-      const kind = str(row.type);
-      return [{ id, title: str(row.contactName) || str(row.name) || (phone ? `+${phone}` : id), phone,
-        type: ["group", "channel", "bot"].includes(kind) ? kind as MaxChatDto["type"] : "user" as const }];
-    });
-  }
-  private async syncDirectory(s: Session): Promise<void> {
-    const results = await Promise.allSettled([s.client.call("getChats"), s.client.call("getContacts")]);
-    const chats = results[0].status === "fulfilled" ? this.directory(results[0].value) : null;
-    const contacts = results[1].status === "fulfilled" ? this.directory(results[1].value) : null;
-    if (!chats && !contacts) throw (results[0] as PromiseRejectedResult).reason;
-    const titles = new Map(contacts?.map(c => [c.id, c]) ?? []);
-    const existing = new Map(s.dto.chats.map(c => [c.id, c]));
-    for (const chat of chats ?? []) existing.set(chat.id, { ...existing.get(chat.id), ...chat, title: titles.get(chat.id)?.title || chat.title });
+  private async syncDirectory(s: MaxSession): Promise<void> {
+    const results = await Promise.allSettled([
+      s.client.call("getChats"),
+      s.client.call("getContacts"),
+    ]);
+    const parse = (
+      result: PromiseSettledResult<unknown>,
+    ): MaxChatDto[] | null => {
+      if (result.status !== "fulfilled") return null;
+      const rows = directorySchema.safeParse(result.value);
+      if (!rows.success) return null;
+      return rows.data.slice(0, MAX_CHATS).map((row) => {
+        const phone =
+          row.phoneNumber && /^\d{7,15}$/.test(String(row.phoneNumber))
+            ? String(row.phoneNumber)
+            : undefined;
+        return {
+          id: row.chatId,
+          title: (
+            row.contactName ||
+            row.name ||
+            (phone ? `+${phone}` : row.chatId)
+          ).slice(0, 200),
+          phone,
+          type: ["group", "channel", "bot"].includes(row.type ?? "")
+            ? (row.type as MaxChatDto["type"])
+            : "user",
+        };
+      });
+    };
+    const chats = parse(results[0]);
+    const contacts = parse(results[1]);
+    if (!chats && !contacts)
+      throw new MaxError("Контакты пока недоступны.", "unavailable");
+    const names = new Map(contacts?.map((c) => [c.id, c]) ?? []);
+    const existing = new Map(s.dto.chats.map((c) => [c.id, c]));
+    for (const chat of chats ?? [])
+      existing.set(chat.id, {
+        ...existing.get(chat.id),
+        ...chat,
+        title: names.get(chat.id)?.title || chat.title,
+      });
     s.dto.chats = [...existing.values()].slice(0, MAX_CHATS);
-    if (contacts) s.dto.contacts = [...new Map(contacts.map(c => [c.id, c])).values()];
+    if (contacts)
+      s.dto.contacts = [...new Map(contacts.map((c) => [c.id, c])).values()];
     s.dto.syncedAt = this.now();
-    s.dto.syncWarning = !chats || !contacts ? "Часть списка не обновилась. Повторите обновление позже." : undefined;
+    s.dto.syncWarning =
+      !chats || !contacts
+        ? "Часть списка не обновилась. Повторите позже."
+        : undefined;
   }
   async sync(owner: number, connectionId: string): Promise<MaxSessionDto> {
-    return this.use(owner, connectionId, async s => { await this.syncDirectory(s); s.historyCounts.clear(); return structuredClone(s.dto); });
+    return this.use(owner, connectionId, async (s) => {
+      await this.syncDirectory(s);
+      s.historyCounts.clear();
+      return structuredClone(s.dto);
+    });
   }
-  async history(owner: number, connectionId: string, chatId: string, count = 100): Promise<MaxSessionDto> {
-    if (!/^-?\d{1,30}$/.test(chatId) || !Number.isInteger(count) || count < 1 || count > 5000) fail("Некорректный запрос истории.");
-    return this.use(owner, connectionId, async s => {
-      let chat = s.dto.chats.find(c => c.id === chatId);
-      if (!chat) {
-        const contact = s.dto.contacts?.find(c => c.id === chatId);
-        if (!contact) fail("Выберите чат или контакт из списка.");
-        if (s.dto.chats.length >= MAX_CHATS) fail("Достигнут лимит списка чатов.");
-        chat = { ...contact }; s.dto.chats.push(chat);
-      }
-      if ((s.historyCounts.get(chatId) ?? 0) < count) {
-        const result = await s.client.call("getChatHistory", "POST", { chatId, count });
-        if (!Array.isArray(result)) fail("Не удалось получить историю MAX.", "unavailable");
-        for (const item of result.slice(0, count).reverse()) {
-          const row = record(item); const id = str(row.idMessage);
-          if (!id || row.chatId !== chatId || !["incoming", "outgoing"].includes(str(row.type))) continue;
-          const text = str(row.textMessage, MAX_TEXT_LENGTH) || str(record(row.extendedTextMessage).text, MAX_TEXT_LENGTH) || str(row.caption, MAX_TEXT_LENGTH);
-          const status = str(row.statusMessage) as MaxMessageStatus;
-          this.addMessage(s, { id, chatId, text: row.isDeleted ? "Сообщение удалено" : text || "Вложение — откройте в MAX",
-            direction: row.type as "incoming" | "outgoing", timestamp: typeof row.timestamp === "number" ? row.timestamp * 1000 : this.now(),
-            status: ["sent", "delivered", "read", "failed"].includes(status) ? status : undefined });
-        }
+  async history(
+    owner: number,
+    connectionId: string,
+    chatId: string,
+    count = 100,
+    refresh = false,
+  ): Promise<MaxSessionDto> {
+    if (
+      !/^-?\d{1,30}$/.test(chatId) ||
+      !Number.isInteger(count) ||
+      count < 1 ||
+      count > 5000
+    )
+      fail("Некорректный запрос истории.");
+    return this.use(owner, connectionId, async (s) => {
+      const chat = this.chat(s, chatId);
+      if (refresh || (s.historyCounts.get(chatId) ?? 0) < count) {
+        const result = checked(
+          historySchema,
+          await s.client.call("getChatHistory", "POST", { chatId, count }),
+        );
+        for (const row of result.slice(0, count).reverse())
+          if (row.chatId === chatId)
+            this.addMessage(s, normalizeHistory(row, this.now()));
         s.historyCounts.set(chatId, count);
       }
       chat.unread = 0;
       return structuredClone(s.dto);
     });
   }
-  async poll(owner: number, connectionId: string): Promise<MaxSessionDto> {
-    return this.use(owner, connectionId, async s => {
-      const result = await s.client.call("receiveNotification", "GET", undefined, "?receiveTimeout=1");
+  async poll(
+    owner: number,
+    connectionId: string,
+    activeChatId?: string,
+  ): Promise<MaxSessionDto> {
+    return this.use(owner, connectionId, async (s) => {
+      const result = await s.client.call(
+        "receiveNotification",
+        "GET",
+        undefined,
+        "?receiveTimeout=1",
+      );
       if (result === null) return structuredClone(s.dto);
-      const envelope = z.object({ receiptId: z.number().int().positive().safe(), body: z.record(z.unknown()) }).safeParse(result);
-      if (!envelope.success) fail("Некорректное уведомление GREEN-API; оно оставлено в очереди.", "unavailable");
-      const { receiptId, body } = envelope.data;
-      const instanceData = record(body.instanceData);
-      const instanceId = typeof instanceData.idInstance === "number" && Number.isSafeInteger(instanceData.idInstance)
-        ? String(instanceData.idInstance) : str(instanceData.idInstance);
-      if (instanceId !== s.dto.idInstance || instanceData.typeInstance !== "v3") {
-        fail("Уведомление не принадлежит подключённому инстансу MAX.", "unavailable");
-      }
+      const { receiptId, body } = checked(notificationSchema, result);
+      if (
+        String(body.instanceData.idInstance) !== s.dto.idInstance ||
+        body.instanceData.typeInstance !== "v3"
+      )
+        throw new MaxError(
+          "Уведомление не принадлежит этому инстансу.",
+          "unavailable",
+        );
       if (body.typeWebhook === "outgoingMessageStatus") {
-        const message = s.dto.messages.find(m => m.id === body.idMessage && m.chatId === body.chatId && m.direction === "outgoing");
-        const status = str(body.status);
-        if (message) {
-          const mapped = ["failed", "noAccount", "notInGroup"].includes(status) ? "failed" : status;
-          const rank: Record<string, number> = { queued: 0, sent: 1, delivered: 2, read: 3, failed: 4 };
-          if (mapped in rank && rank[mapped] > rank[message.status ?? "queued"]) message.status = mapped as MaxMessageStatus;
-        }
-      } else if (["incomingMessageReceived", "outgoingMessageReceived", "outgoingAPIMessageReceived"].includes(str(body.typeWebhook))) {
-        const sender = record(body.senderData);
-        const data = record(body.messageData);
-        const text = data.typeMessage === "textMessage" ? str(record(data.textMessageData).textMessage, MAX_TEXT_LENGTH)
-          : data.typeMessage === "extendedTextMessage" ? str(record(data.extendedTextMessageData).text, MAX_TEXT_LENGTH) : "";
-        const chatId = str(sender.chatId, 30); const id = str(body.idMessage);
-        if (["textMessage", "extendedTextMessage"].includes(str(data.typeMessage)) && (!text || !id || !/^-?\d+$/.test(chatId))) {
-          fail("Некорректное текстовое уведомление MAX; оно оставлено в очереди.", "unavailable");
-        }
-        if (text && id && /^-?\d+$/.test(chatId)) {
-          if (!s.dto.chats.some(c => c.id === chatId)) {
-            if (s.dto.chats.length >= MAX_CHATS) fail("Достигнут лимит чатов. Уведомление оставлено в очереди.", "unavailable");
-            s.dto.chats.push({ id: chatId, title: str(sender.chatName) || str(sender.senderName) || chatId });
+        const message = s.dto.messages.find(
+          (m) =>
+            m.id === body.idMessage &&
+            m.chatId === body.chatId &&
+            m.direction === "outgoing",
+        );
+        const mapped = ["failed", "noAccount", "notInGroup"].includes(
+          body.status ?? "",
+        )
+          ? "failed"
+          : body.status;
+        if (
+          message &&
+          mapped &&
+          mapped in RANK &&
+          RANK[mapped as MaxMessageStatus] > RANK[message.status ?? "queued"]
+        )
+          message.status = mapped as MaxMessageStatus;
+      } else if (
+        [
+          "incomingMessageReceived",
+          "outgoingMessageReceived",
+          "outgoingAPIMessageReceived",
+        ].includes(body.typeWebhook)
+      ) {
+        const data = body.messageData;
+        const chatId = body.senderData?.chatId;
+        const edited = data?.editedMessageData;
+        const deleted = data?.deletedMessageData;
+        if (chatId && (edited || deleted)) {
+          const message = s.dto.messages.find(
+            (m) =>
+              m.chatId === chatId &&
+              m.id === (edited?.stanzaId || deleted?.stanzaId),
+          );
+          if (message && edited && !message.deleted) {
+            message.text = edited.textMessage.slice(0, 4000);
+            message.edited = true;
+            this.updatePreview(s, message);
           }
-          this.addMessage(s, { id, chatId, text, direction: body.typeWebhook === "incomingMessageReceived" ? "incoming" : "outgoing", timestamp: typeof body.timestamp === "number" ? body.timestamp * 1000 : this.now() }, body.typeWebhook === "incomingMessageReceived");
+          if (message && deleted) {
+            message.deleted = true;
+            message.text = "Сообщение удалено";
+            message.attachment = undefined;
+            message.quote = undefined;
+            s.media.delete(`${message.chatId}:${message.id}`);
+            this.updatePreview(s, message);
+          }
+        } else if (
+          data &&
+          !["reactionMessage", "editedMessage", "deletedMessage"].includes(
+            data.typeMessage,
+          )
+        ) {
+          const normalized = normalizeNotification(body, this.now());
+          if (!normalized)
+            throw new MaxError(
+              "Некорректное уведомление оставлено в очереди.",
+              "unavailable",
+            );
+          if (!s.dto.chats.some((c) => c.id === normalized.message.chatId)) {
+            if (s.dto.chats.length >= MAX_CHATS)
+              throw new MaxError("Достигнут лимит чатов.", "unavailable");
+            s.dto.chats.push({
+              id: normalized.message.chatId,
+              title: (
+                body.senderData?.chatName ||
+                body.senderData?.senderContactName ||
+                body.senderData?.senderName ||
+                normalized.message.chatId
+              ).slice(0, 200),
+            });
+          }
+          this.addMessage(
+            s,
+            normalized,
+            body.typeWebhook === "incomingMessageReceived",
+          );
+          if (activeChatId) {
+            const active = s.dto.chats.find((c) => c.id === activeChatId);
+            if (active) active.unread = 0;
+          }
         }
       }
-      // Store before ACK. A failed ACK is retried, and message IDs prevent duplicates.
-      const ack = record(await s.client.call("deleteNotification", "DELETE", undefined, `/${receiptId}`));
-      if (ack.result !== true) fail("GREEN-API не подтвердил обработку уведомления. Повторите получение.", "unavailable");
+      checked(
+        ackSchema,
+        await s.client.call(
+          "deleteNotification",
+          "DELETE",
+          undefined,
+          `/${receiptId}`,
+        ),
+      );
       return structuredClone(s.dto);
     });
   }

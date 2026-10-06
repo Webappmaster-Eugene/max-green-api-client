@@ -1,42 +1,59 @@
 {
   "name": "max-green-api-client",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch server/index.ts",
+    "dev": "node --env-file=.env.local --import tsx --watch scripts/dev-server.mjs",
     "dev:ui": "vite --host 127.0.0.1",
     "typecheck": "tsc --noEmit",
     "build": "npm run typecheck && vite build && tsup server/index.ts --format esm --out-dir dist/server",
     "start": "node dist/server/index.js",
     "test": "tsx --test tests/*.test.ts",
     "test:ui": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "smoke": "npm run typecheck && npm run architecture:check && npm audit --omit=dev --audit-level=high",
+    "architecture:check": "tsx --test tests/architecture.test.ts",
+    "auth:setup": "node scripts/setup-auth.mjs",
+    "start:local": "node --env-file=.env.local dist/server/index.js",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "engines": {
     "node": ">=22.12"
   },
   "dependencies": {
+    "@fontsource/manrope": "^5.3.0",
     "@hono/node-server": "^1.19.14",
+    "@mantine/core": "^9.7.0",
+    "@mantine/hooks": "^9.7.0",
+    "@tabler/icons-react": "^3.49.0",
     "hono": "^4.12.23",
-    "zod": "^3.25.76",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "jose": "^6.2.12",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
-    "tsx": "^4.19.1",
-    "tsup": "^8.3.0",
-    "typescript": "^5.6.3",
-    "vite": "^8.0.16",
-    "@vitejs/plugin-react": "^6.0.1",
+    "@playwright/test": "^1.59.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.6",
     "@types/node": "^22.9.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
-    "vitest": "^3.2.7",
+    "@vitejs/plugin-react": "^6.0.1",
     "jsdom": "^30.0.1",
-    "@testing-library/react": "^16.3.3",
-    "@testing-library/user-event": "^14.6.6",
-    "@testing-library/jest-dom": "^6.9.1",
-    "@playwright/test": "^1.59.1"
+    "prettier": "^3.9.9",
+    "tsup": "^8.3.0",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.3",
+    "vite": "^8.0.16",
+    "vitest": "^5.0.3"
+  },
+  "overrides": {
+    "esbuild": "0.28.2"
   }
 }
