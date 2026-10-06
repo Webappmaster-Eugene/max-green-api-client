@@ -159,3 +159,51 @@ test("provider address restrictions and errors do not expose credentials", async
       !error.message.includes(credentials.apiTokenInstance),
   );
 });
+
+test("mediaUrl accepts the exact API or media host from the console for uploads", async () => {
+  for (const origin of [
+    "https://3100.api.green-api.com",
+    "https://api.green-api.com",
+    "https://3100.media.green-api.com",
+    "https://media.green-api.com",
+  ]) {
+    const client = new GreenMaxClient(
+      { ...credentials, mediaUrl: `${origin}/` },
+      (async (raw, init) => {
+        assert.equal(
+          String(raw),
+          `${origin}/waInstance${credentials.idInstance}/sendFileByUpload/${credentials.apiTokenInstance}`,
+        );
+        assert.equal(init?.method, "POST");
+        assert.equal(init?.redirect, "error");
+        assert.ok(init?.body instanceof FormData);
+        return Response.json({ idMessage: "uploaded" });
+      }) as typeof fetch,
+    );
+    try {
+      assert.deepEqual(await client.upload(new FormData()), {
+        idMessage: "uploaded",
+      });
+    } finally {
+      client.close();
+    }
+  }
+});
+
+test("mediaUrl rejects untrusted hosts and URL credentials before any request", () => {
+  for (const mediaUrl of [
+    "not-a-url",
+    "http://3100.api.green-api.com",
+    "https://127.0.0.1",
+    "https://3100.media.green-api.com.evil.test",
+    "https://3100.api.green-api.com:8443",
+    "https://user:pass@3100.api.green-api.com",
+    "https://3100.api.green-api.com/path",
+    "https://3100.media.green-api.com?token=secret",
+    "https://3100.media.green-api.com#fragment",
+  ])
+    assert.throws(() => new GreenMaxClient({ ...credentials, mediaUrl }), {
+      code: "invalid",
+    });
+  assert.throws(() => greenApiOrigin("https://3100.media.green-api.com"));
+});

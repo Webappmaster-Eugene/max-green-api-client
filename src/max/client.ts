@@ -1,25 +1,30 @@
 import { MaxError } from "./error.js";
 import type { MaxConnectInput } from "../../types/max.js";
 
-export function greenApiOrigin(raw: string): string {
+export function greenApiOrigin(raw: string, allowMedia = false): string {
+  const field = allowMedia ? "mediaUrl" : "apiUrl";
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
-    throw new MaxError("Скопируйте apiUrl из кабинета GREEN-API.", "invalid");
+    throw new MaxError(`Скопируйте ${field} из кабинета GREEN-API.`, "invalid");
   }
   if (
     url.protocol !== "https:" ||
     url.port ||
     url.username ||
     url.password ||
-    !/^(?:\d+\.)?api\.green-api\.com$/.test(url.hostname) ||
+    !(
+      allowMedia
+        ? /^(?:\d+\.)?(?:api|media)\.green-api\.com$/
+        : /^(?:\d+\.)?api\.green-api\.com$/
+    ).test(url.hostname) ||
     !["", "/"].includes(url.pathname) ||
     url.search ||
     url.hash
   ) {
     throw new MaxError(
-      "apiUrl должен быть HTTPS-адресом сервера api.green-api.com из кабинета.",
+      `${field} должен быть HTTPS-адресом сервера ${allowMedia ? "api.green-api.com или media.green-api.com" : "api.green-api.com"} из кабинета.`,
       "invalid",
     );
   }
@@ -36,19 +41,7 @@ export class GreenMaxClient {
   ) {
     this.origin = greenApiOrigin(credentials.apiUrl);
     if (credentials.mediaUrl) {
-      const media = new URL(credentials.mediaUrl);
-      if (!/^(?:\d+\.)?media\.green-api\.com$/.test(media.hostname))
-        throw new MaxError(
-          "Скопируйте mediaUrl из кабинета GREEN-API.",
-          "invalid",
-        );
-      this.mediaOrigin = greenApiOrigin(
-        credentials.mediaUrl
-          .replace(".media.green-api.com", ".api.green-api.com")
-          .replace("//media.green-api.com", "//api.green-api.com"),
-      )
-        .replace(".api.green-api.com", ".media.green-api.com")
-        .replace("//api.green-api.com", "//media.green-api.com");
+      this.mediaOrigin = greenApiOrigin(credentials.mediaUrl, true);
     }
   }
 

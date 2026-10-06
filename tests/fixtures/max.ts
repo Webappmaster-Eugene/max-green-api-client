@@ -4,7 +4,7 @@ import type { MaxConnectInput } from "../../types/max.js";
 
 export const credentials: MaxConnectInput = {
   apiUrl: "https://3100.api.green-api.com",
-  mediaUrl: "https://3100.media.green-api.com",
+  mediaUrl: "https://3100.api.green-api.com",
   idInstance: "3100000001",
   apiTokenInstance: "fixture_not_a_real_green_token",
   accountConsent: true,
