@@ -1,9 +1,16 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { SignJWT, jwtVerify } from "jose";
 import { AUTH_TTL_SECONDS } from "../../contracts/constants.js";
-import { jwtPayloadSchema, userSchema } from "../../contracts/auth.js";
+import { EncryptedStore } from "../../src/max/storage.js";
+import {
+  jwtPayloadSchema,
+  userSchema,
+  authStoreSchema,
+} from "../../contracts/auth.js";
 import type {
   AuthOptions,
+  AuthStore,
+  StoredAuthGrant,
   AuthGrant,
   LoginResult,
   LoginInput,
@@ -13,7 +20,8 @@ import { hashPassword, verifyPassword } from "./password.js";
 import { AppError } from "../lib/error.js";
 
 export class AuthSessions {
-  private readonly sessions = new Map<string, AuthGrant>();
+  private readonly sessions = new Map<string, StoredAuthGrant>();
+  private readonly store?: EncryptedStore<AuthStore>;
   private readonly key: Uint8Array;
   private readonly ttl: number;
   private readonly now: () => number;
@@ -27,11 +35,31 @@ export class AuthSessions {
     this.key = new TextEncoder().encode(options.secret);
     this.ttl = options.ttlSeconds ?? AUTH_TTL_SECONDS;
     this.now = options.now ?? Date.now;
+    if (options.storageDirectory) {
+      this.store = new EncryptedStore(
+        options.storageDirectory,
+        "auth-sessions",
+        authStoreSchema,
+        { version: 1, sessions: [] },
+      );
+      for (const grant of this.store.read().sessions)
+        this.sessions.set(grant.jti, grant);
+    }
+    this.sweep();
   }
 
   private sweep(): void {
+    let changed = false;
     for (const [id, session] of this.sessions)
-      if (session.expiresAt <= this.now()) this.sessions.delete(id);
+      if (session.expiresAt <= this.now()) {
+        this.sessions.delete(id);
+        changed = true;
+      }
+    if (changed) this.persist();
+  }
+
+  private persist(): void {
+    this.store?.write({ version: 1, sessions: [...this.sessions.values()] });
   }
 
   async login(input: LoginInput): Promise<LoginResult> {
@@ -65,7 +93,14 @@ export class AuthSessions {
       .setExpirationTime(Math.floor(expiresAt / 1000))
       .sign(this.key);
     const safe = userSchema.parse(user);
-    this.sessions.set(jti, { user: safe, jti, csrf, expiresAt });
+    this.sessions.set(jti, {
+      user: safe,
+      jti,
+      csrf,
+      expiresAt,
+      version: user.version,
+    });
+    this.persist();
     return { token, session: { user: safe, expiresAt, csrfToken: csrf } };
   }
 
@@ -89,6 +124,7 @@ export class AuthSessions {
         !user?.active ||
         session.user.id !== user.id ||
         claims.version !== user.version ||
+        session.version !== user.version ||
         session.csrf !== claims.csrf
       )
         throw new Error("Invalid session");
@@ -96,6 +132,43 @@ export class AuthSessions {
     } catch {
       throw new AppError("Сессия завершена. Войдите заново.", 401);
     }
+  }
+
+  async renew(grant: AuthGrant): Promise<LoginResult | null> {
+    const current = this.sessions.get(grant.jti);
+    if (
+      !current ||
+      current.expiresAt - this.now() >
+        this.ttl * 1000 - Math.min(86400000, this.ttl * 500)
+    )
+      return null;
+    const user = this.users.find(current.user.id);
+    if (!user?.active || user.version !== current.version)
+      throw new AppError("Войдите на сайт.", 401);
+    const expiresAt = this.now() + this.ttl * 1000;
+    const token = await new SignJWT({
+      version: current.version,
+      csrf: current.csrf,
+    })
+      .setProtectedHeader({ alg: "HS256", typ: "JWT" })
+      .setSubject(String(user.id))
+      .setJti(current.jti)
+      .setIssuer(this.options.origin)
+      .setAudience("max-client")
+      .setIssuedAt(Math.floor(this.now() / 1000))
+      .setExpirationTime(Math.floor(expiresAt / 1000))
+      .sign(this.key);
+    const updated = { ...current, expiresAt };
+    this.sessions.set(current.jti, updated);
+    this.persist();
+    return {
+      token,
+      session: {
+        user: userSchema.parse(user),
+        expiresAt,
+        csrfToken: current.csrf,
+      },
+    };
   }
 
   verifyCsrf(grant: AuthGrant, value?: string): void {
@@ -109,10 +182,12 @@ export class AuthSessions {
 
   logout(jti: string): void {
     this.sessions.delete(jti);
+    this.persist();
   }
   revokeUser(id: number): void {
     for (const [jti, grant] of this.sessions)
       if (grant.user.id === id) this.sessions.delete(jti);
+    this.persist();
   }
   close(): void {
     this.sessions.clear();

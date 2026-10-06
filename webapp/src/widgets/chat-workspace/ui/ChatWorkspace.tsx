@@ -1,5 +1,6 @@
 import {
   ActionIcon,
+  Button,
   Box,
   Container,
   Group,
@@ -58,17 +59,51 @@ export function ChatWorkspace({
           <Container size={460}>
             <Stack gap="xl">
               <Stack gap="xs">
-                <Title order={2}>Подключите аккаунт MAX</Title>
+                <Title order={2}>
+                  {controller.restoreFailed
+                    ? "Не удалось открыть MAX"
+                    : controller.saved
+                      ? "Вернитесь в MAX"
+                      : "Подключите аккаунт MAX"}
+                </Title>
                 <Text size="sm" c="dimmed">
                   Чаты, контакты и история из вашего аккаунта. Сообщения
                   отправляются от его имени.
                 </Text>
               </Stack>
               <Paper withBorder p="lg" radius="md">
-                <ConnectionForm
-                  busy={controller.busy}
-                  onConnect={controller.connect}
-                />
+                {controller.restoreFailed ? (
+                  <Stack>
+                    <Text size="sm">
+                      Не удалось восстановить подключение. Повторите попытку —
+                      реквизиты заново вводить не нужно.
+                    </Text>
+                    <Button
+                      loading={controller.loading}
+                      onClick={() => void controller.restore()}
+                    >
+                      Повторить подключение
+                    </Button>
+                    {controller.saved?.connected && (
+                      <Button
+                        variant="subtle"
+                        color="red"
+                        disabled={controller.busy}
+                        onClick={() => void controller.disconnect()}
+                      >
+                        Выйти из MAX
+                      </Button>
+                    )}
+                  </Stack>
+                ) : (
+                  <ConnectionForm
+                    key={controller.saved?.profile.idInstance ?? "new"}
+                    profile={controller.saved?.profile}
+                    busy={controller.busy}
+                    onConnect={controller.connect}
+                    onReconnect={controller.reconnect}
+                  />
+                )}
               </Paper>
             </Stack>
           </Container>

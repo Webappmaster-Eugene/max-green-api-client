@@ -3,6 +3,7 @@ import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { environmentSchema } from "../contracts/env.js";
 import { createApp } from "./app.js";
+import { SavedConnections } from "../src/max/connections.js";
 import { MaxSessions } from "../src/max/session.js";
 import { UserRepository } from "./auth/users.js";
 import { AuthSessions } from "./auth/sessions.js";
@@ -25,8 +26,13 @@ async function start(): Promise<void> {
   const auth = new AuthSessions(users, {
     secret: env.AUTH_JWT_SECRET,
     origin: env.PUBLIC_ORIGIN,
+    storageDirectory: env.DATA_DIR,
   });
-  const sessions = new MaxSessions();
+  const sessions = new MaxSessions(
+    undefined,
+    undefined,
+    new SavedConnections(env.DATA_DIR),
+  );
   const app = createApp({ sessions, auth, origin: env.PUBLIC_ORIGIN });
   app.get("/docs/user-guide.md", serveStatic({ path: "./docs/USER_GUIDE.md" }));
   app.get("*", serveStatic({ root: "./dist/client" }));

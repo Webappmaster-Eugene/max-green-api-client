@@ -9,33 +9,37 @@ Envelope: успех `{ "ok": true, "data": ... }`, отказ
 и не выдаётся JSON. Для загрузки вложения обычной ссылкой GET-заголовок
 X-Max-Client не требуется; авторизация остаётся обязательной.
 
-| Метод и маршрут                | Назначение                                                    |
-| ------------------------------ | ------------------------------------------------------------- |
-| POST /api/auth/login           | Логин/пароль, установка JWT-cookie, безопасный профиль и CSRF |
-| GET /api/auth/session          | Проверка входа и получение CSRF                               |
-| POST /api/auth/logout          | Отзыв JWT и отключение MAX                                    |
-| POST /api/auth/password        | Смена своего пароля с проверкой текущего                      |
-| GET /api/admin/users           | Безопасные профили пользователей, только admin                |
-| POST /api/admin/users          | Создание пользователя, только admin                           |
-| POST /api/admin/users/access   | Изменение active, отзыв сессий, только admin                  |
-| POST /api/admin/users/password | Сброс пароля и отзыв сессий, только admin                     |
-| GET /api/max                   | Текущее собственное подключение или null                      |
-| POST /api/max/connect          | Подключение по реквизитам GREEN-API и согласию владельца      |
-| POST /api/max/disconnect       | Отключение собственной connectionId                           |
-| POST /api/max/chats            | Поиск номера и открытие чата                                  |
-| POST /api/max/sync             | Обновление контактов и чатов                                  |
-| POST /api/max/history          | История chatId, count 1–5000, refresh                         |
-| POST /api/max/poll             | Одно уведомление с подтверждением и текущий snapshot          |
-| POST /api/max/send             | Текст, необязательная quotedMessageId, requestId              |
-| POST /api/max/upload           | Файл, подпись, необязательная цитата, requestId               |
-| POST /api/max/edit             | Изменение известного исходящего текста                        |
-| POST /api/max/delete           | Удаление исходящего, onlySenderDelete                         |
-| POST /api/max/forward          | Пересылка известного сообщения в targetChatId, requestId      |
-| POST /api/max/reaction         | Реакция на известное сообщение                                |
-| POST /api/max/read             | Отметка собственного чата прочитанным                         |
-| GET /api/max/media             | Защищённое скачивание по connectionId/chatId/messageId        |
+| Метод и маршрут                | Назначение                                                           |
+| ------------------------------ | -------------------------------------------------------------------- |
+| POST /api/auth/login           | Логин/пароль, установка JWT-cookie, безопасный профиль и CSRF        |
+| GET /api/auth/session          | Проверка входа и получение CSRF                                      |
+| POST /api/auth/logout          | Отзыв JWT и отключение MAX                                           |
+| POST /api/auth/password        | Смена своего пароля с проверкой текущего                             |
+| GET /api/admin/users           | Безопасные профили пользователей, только admin                       |
+| POST /api/admin/users          | Создание пользователя, только admin                                  |
+| POST /api/admin/users/access   | Изменение active, отзыв сессий, только admin                         |
+| POST /api/admin/users/password | Сброс пароля и отзыв сессий, только admin                            |
+| GET /api/max                   | Текущее собственное подключение или null                             |
+| GET /api/max/profile           | Сохранённые параметры без ключа, connected и connectionId; либо null |
+| POST /api/max/reconnect        | Вход в собственный сохранённый инстанс: только apiTokenInstance      |
+| POST /api/max/connect          | Подключение по реквизитам GREEN-API и согласию владельца             |
+| POST /api/max/disconnect       | Отключение собственной connectionId                                  |
+| POST /api/max/chats            | Поиск номера и открытие чата                                         |
+| POST /api/max/sync             | Обновление контактов и чатов                                         |
+| POST /api/max/history          | История chatId, count 1–5000, refresh                                |
+| POST /api/max/poll             | Одно уведомление с подтверждением и текущий snapshot                 |
+| POST /api/max/send             | Текст, необязательная quotedMessageId, requestId                     |
+| POST /api/max/upload           | Файл, подпись, необязательная цитата, requestId                      |
+| POST /api/max/edit             | Изменение известного исходящего текста                               |
+| POST /api/max/delete           | Удаление исходящего, onlySenderDelete                                |
+| POST /api/max/forward          | Пересылка известного сообщения в targetChatId, requestId             |
+| POST /api/max/reaction         | Реакция на известное сообщение                                       |
+| POST /api/max/read             | Отметка собственного чата прочитанным                                |
+| GET /api/max/media             | Защищённое скачивание по connectionId/chatId/messageId               |
 
 Владелец всегда берётся из проверенного JWT; owner/userId в теле не принимаются.
+GET /api/max автоматически восстанавливает сохранённое подключение.
+expiresAt=0 обозначает отсутствие срока истечения подключения MAX.
 connectionId — UUID. MAX chatId — строка числового ID, включая отрицательные ID
 групп. messageId сохраняется исходным. Пересоздание чатов по номеру для известных
 контактов не требуется.

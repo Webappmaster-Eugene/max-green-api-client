@@ -1,12 +1,16 @@
 import type { z } from "zod";
 import type {
   userSchema,
+  storedAuthGrantSchema,
+  authStoreSchema,
   storedUserSchema,
   userStoreSchema,
   authSessionSchema,
   loginSchema,
   createUserSchema,
 } from "../contracts/auth.js";
+export type StoredAuthGrant = z.infer<typeof storedAuthGrantSchema>;
+export type AuthStore = z.infer<typeof authStoreSchema>;
 export type User = z.infer<typeof userSchema>;
 export type StoredUser = z.infer<typeof storedUserSchema>;
 export type UserStore = z.infer<typeof userStoreSchema>;
@@ -23,6 +27,7 @@ export interface AuthOptions {
   secret: string;
   origin: string;
   ttlSeconds?: number;
+  storageDirectory?: string;
   now?: () => number;
 }
 export interface LoginResult {

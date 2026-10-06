@@ -46,15 +46,30 @@ export function App() {
   }, []);
   useEffect(() => {
     if (!identity) return;
-    const timer = setTimeout(
-      () => {
-        setCsrfToken("");
-        setIdentity(null);
-      },
-      Math.max(0, identity.expiresAt - Date.now()),
-    );
-    return () => clearTimeout(timer);
-  }, [identity]);
+    const controller = new AbortController();
+    const refresh = () => {
+      if (document.hidden) return;
+      void getAuthSession(controller.signal)
+        .then((data) => {
+          if (!controller.signal.aborted) setIdentity(data);
+        })
+        .catch((error) => {
+          if (
+            !controller.signal.aborted &&
+            error instanceof ApiError &&
+            error.status === 401
+          )
+            setIdentity(null);
+        });
+    };
+    const timer = setInterval(refresh, 3600000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      controller.abort();
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [identity?.user.id]);
   const exit = async () => {
     try {
       await logout();

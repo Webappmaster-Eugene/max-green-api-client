@@ -3,6 +3,8 @@ import * as messenger from "../../../entities/messenger";
 import { ApiError, messageError } from "../../../shared/api";
 import type {
   MaxConnectInput,
+  MaxReconnectInput,
+  MaxSavedState,
   MaxMessageDto,
   MaxSessionDto,
   MaxReactionInput,
@@ -12,6 +14,8 @@ import type { MessageDraft } from "./types";
 export function useMessenger() {
   const [session, setSession] = useState<MaxSessionDto | null>(null);
   const [loading, setLoading] = useState(true);
+  const [saved, setSaved] = useState<MaxSavedState | null>(null);
+  const [restoreFailed, setRestoreFailed] = useState(false);
   const [authRequired, setAuthRequired] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -31,29 +35,64 @@ export function useMessenger() {
   const requestIds = useRef(new Map<string, string>());
   const connectionId = session?.connectionId;
 
+  const restore = useCallback(async (signal?: AbortSignal) => {
+    setLoading(true);
+    setRestoreFailed(false);
+    setError("");
+    try {
+      const saved = await messenger.getSavedConnection(signal);
+      if (signal?.aborted || !live.current) return;
+      setSaved(saved);
+      const data = await messenger.getConnection(signal);
+      if (signal?.aborted || !live.current) return;
+      setSession(data);
+      setPollError("");
+      setPollPaused(false);
+      if (data) {
+        let chat = "";
+        try {
+          chat = localStorage.getItem(`max:last-chat:${data.idInstance}`) ?? "";
+        } catch {}
+        if (
+          data.chats.some((c) => c.id === chat) ||
+          data.contacts.some((c) => c.id === chat)
+        ) {
+          setSelected(chat);
+          setHistoryLoading(true);
+          try {
+            const history = await messenger.loadHistory(
+              data.connectionId,
+              chat,
+              100,
+            );
+            if (!signal?.aborted && live.current) setSession(history);
+          } catch (error) {
+            if (!signal?.aborted && live.current) setError(messageError(error));
+          } finally {
+            if (!signal?.aborted && live.current) setHistoryLoading(false);
+          }
+        }
+      }
+    } catch (error) {
+      if (!signal?.aborted && live.current) {
+        setRestoreFailed(true);
+        setError(messageError(error));
+        if (error instanceof ApiError && error.status === 401)
+          setAuthRequired(true);
+      }
+    } finally {
+      if (!signal?.aborted && live.current) setLoading(false);
+    }
+  }, []);
   useEffect(() => {
     live.current = true;
     const controller = new AbortController();
-    messenger
-      .getConnection(controller.signal)
-      .then((data) => {
-        if (live.current) setSession(data);
-      })
-      .catch((error) => {
-        if (!controller.signal.aborted) {
-          setError(messageError(error));
-          if (error instanceof ApiError && error.status === 401)
-            setAuthRequired(true);
-        }
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setLoading(false);
-      });
+    void restore(controller.signal);
     return () => {
       live.current = false;
       controller.abort();
     };
-  }, []);
+  }, [restore]);
 
   useEffect(() => {
     if (!connectionId || pollPaused) return;
@@ -85,6 +124,7 @@ export function useMessenger() {
               setSession(null);
               setSelected("");
               setDrafts({});
+              void restore();
             }
           });
         polling.current = job;
@@ -102,7 +142,7 @@ export function useMessenger() {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [connectionId, pollPaused]);
+  }, [connectionId, pollPaused, restore]);
 
   const run = useCallback(
     async (work: () => Promise<void>): Promise<boolean> => {
@@ -124,6 +164,7 @@ export function useMessenger() {
             setSession(null);
             setSelected("");
             setDrafts({});
+            void restore();
           }
         }
         return false;
@@ -132,7 +173,7 @@ export function useMessenger() {
         if (live.current) setBusy(false);
       }
     },
-    [],
+    [restore],
   );
 
   const addMessage = (message: MaxMessageDto) =>
@@ -165,7 +206,18 @@ export function useMessenger() {
   };
   const connect = (input: MaxConnectInput) =>
     run(async () => {
-      setSession(await messenger.connectMax(input));
+      const connected = await messenger.connectMax(input);
+      setSession(connected);
+      setSaved({
+        profile: {
+          apiUrl: input.apiUrl,
+          mediaUrl: input.mediaUrl,
+          idInstance: connected.idInstance,
+        },
+        connected: true,
+        connectionId: connected.connectionId,
+      });
+      setRestoreFailed(false);
       setSelected("");
       setPollError("");
       setPollPaused(false);
@@ -173,10 +225,32 @@ export function useMessenger() {
       setDrafts({});
       requestIds.current.clear();
     });
+  const reconnect = (input: MaxReconnectInput) =>
+    run(async () => {
+      const connected = await messenger.reconnectMax(input);
+      setSession(connected);
+      setSaved((current) =>
+        current
+          ? {
+              ...current,
+              connected: true,
+              connectionId: connected.connectionId,
+            }
+          : null,
+      );
+      setRestoreFailed(false);
+      setPollError("");
+      setPollPaused(false);
+    });
   const disconnect = () =>
     run(async () => {
-      if (!session) return;
-      await messenger.disconnectMax(session.connectionId);
+      const id = session?.connectionId ?? saved?.connectionId;
+      if (!id) return;
+      await messenger.disconnectMax(id);
+      setSaved((current) =>
+        current ? { ...current, connected: false } : null,
+      );
+      setRestoreFailed(false);
       setSession(null);
       setSelected("");
       setDrafts({});
@@ -191,6 +265,9 @@ export function useMessenger() {
   ): Promise<boolean> => {
     if (!session || operating.current) return false;
     setSelected(id);
+    try {
+      localStorage.setItem(`max:last-chat:${session.idInstance}`, id);
+    } catch {}
     setHistoryLoading(true);
     try {
       return await run(async () => {
@@ -357,6 +434,10 @@ export function useMessenger() {
     drafts,
     connect,
     disconnect,
+    reconnect,
+    saved,
+    restoreFailed,
+    restore,
     select,
     open,
     updateDraft,

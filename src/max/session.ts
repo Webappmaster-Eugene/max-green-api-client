@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { z } from "zod";
+import { SavedConnections } from "./connections.js";
 import { GreenMaxClient } from "./client.js";
 import { MaxError } from "./error.js";
 import { normalizeHistory, normalizeNotification } from "./message.js";
@@ -28,6 +29,9 @@ import {
   deleteResultSchema,
 } from "../../contracts/provider.js";
 import type {
+  MaxProfile,
+  MaxSavedState,
+  MaxReconnectInput,
   MaxChatDto,
   MaxConnectInput,
   MaxMessageDto,
@@ -48,7 +52,6 @@ import type {
 } from "../../types/internal.js";
 import type { NormalizedMessage } from "../../types/provider.js";
 
-const SESSION_MS = 8 * 60 * 60 * 1000;
 const MAX_MESSAGES = 10000;
 const MAX_CHATS = 10000;
 const UNKNOWN_SEND =
@@ -74,21 +77,25 @@ export function maxPhone(raw: string): string {
 }
 
 export class MaxSessions {
+  private closed = false;
   private readonly sessions = new Map<number, MaxSession>();
   private readonly connecting = new Map<number, GreenMaxClient>();
   private readonly claimed = new Set<string>();
   private readonly generations = new Map<number, number>();
-  private readonly timer: ReturnType<typeof setInterval>;
+  private readonly restoring = new Map<number, Promise<MaxSessionDto | null>>();
   constructor(
     private readonly makeClient = (credentials: MaxConnectInput) =>
       new GreenMaxClient(credentials),
     private readonly now = Date.now,
-  ) {
-    this.timer = setInterval(() => this.sweep(), 60000);
-    this.timer.unref();
-  }
+    private readonly saved?: SavedConnections,
+  ) {}
   close(): void {
-    clearInterval(this.timer);
+    this.closed = true;
+    for (const owner of new Set([
+      ...this.sessions.keys(),
+      ...this.connecting.keys(),
+    ]))
+      this.generations.set(owner, (this.generations.get(owner) ?? 0) + 1);
     for (const s of this.sessions.values()) s.client.close();
     for (const c of this.connecting.values()) c.close();
     this.sessions.clear();
@@ -96,17 +103,13 @@ export class MaxSessions {
     this.claimed.clear();
   }
   disconnectOwner(owner: number): void {
+    this.saved?.forget(owner);
     this.generations.set(owner, (this.generations.get(owner) ?? 0) + 1);
     this.sessions.get(owner)?.client.close();
     this.connecting.get(owner)?.close();
     this.sessions.delete(owner);
   }
-  private sweep(): void {
-    for (const [owner, s] of this.sessions)
-      if (s.dto.expiresAt <= this.now()) this.disconnectOwner(owner);
-  }
   private session(owner: number, connectionId?: string): MaxSession {
-    this.sweep();
     const s = this.sessions.get(owner);
     if (!s || (connectionId && connectionId !== s.dto.connectionId))
       throw new MaxError(
@@ -116,15 +119,56 @@ export class MaxSessions {
     return s;
   }
   status(owner: number): MaxSessionDto | null {
-    this.sweep();
     const s = this.sessions.get(owner);
     return s ? structuredClone(s.dto) : null;
+  }
+  savedState(owner: number): MaxSavedState | null {
+    const connection = this.saved?.get(owner);
+    return connection
+      ? {
+          profile: connection.profile,
+          connected: !!connection.credentials,
+          connectionId: connection.connectionId,
+        }
+      : null;
+  }
+  profile(owner: number): MaxProfile | null {
+    return this.saved?.profile(owner) ?? null;
+  }
+  async restore(owner: number): Promise<MaxSessionDto | null> {
+    if (this.connecting.has(owner) && !this.restoring.has(owner))
+      throw new MaxError(
+        "Подключение ещё выполняется. Повторите через несколько секунд.",
+        "limit",
+      );
+    if (this.restoring.has(owner)) return this.restoring.get(owner)!;
+    const current = this.status(owner);
+    if (current) return current;
+    const connection = this.saved?.get(owner);
+    if (!connection?.credentials) return null;
+    const task = this.connect(owner, connection.credentials);
+    this.restoring.set(owner, task);
+    try {
+      return await task;
+    } finally {
+      if (this.restoring.get(owner) === task) this.restoring.delete(owner);
+    }
+  }
+  reconnect(owner: number, input: MaxReconnectInput): Promise<MaxSessionDto> {
+    const profile = this.profile(owner);
+    if (!profile) fail("Сначала укажите реквизиты инстанса GREEN-API.");
+    return this.connect(owner, {
+      ...profile,
+      apiTokenInstance: input.apiTokenInstance,
+      accountConsent: true,
+    });
   }
   private async use<T>(
     owner: number,
     connectionId: string,
     work: (s: MaxSession) => Promise<T>,
   ): Promise<T> {
+    if (!this.sessions.has(owner)) await this.restore(owner);
     const s = this.session(owner, connectionId);
     if (s.busy)
       throw new MaxError(
@@ -139,6 +183,11 @@ export class MaxSessions {
     }
   }
   async connect(owner: number, input: MaxConnectInput): Promise<MaxSessionDto> {
+    if (this.closed)
+      throw new MaxError(
+        "Сервер перезапускается. Повторите подключение.",
+        "unavailable",
+      );
     const parsed = maxConnectSchema.safeParse(input);
     if (!parsed.success)
       fail("Проверьте реквизиты GREEN-API и согласие владельца аккаунта.");
@@ -146,13 +195,13 @@ export class MaxSessions {
       ...parsed.data,
       idInstance: BigInt(parsed.data.idInstance).toString(),
     };
-    this.sweep();
     if (this.connecting.has(owner) || this.sessions.has(owner))
       fail("Сначала отключите текущий аккаунт или дождитесь подключения.");
     if (this.sessions.size + this.connecting.size >= 50)
       throw new MaxError("Сейчас слишком много подключений MAX.", "limit");
     const instance = credentials.idInstance;
     if (
+      this.saved?.claimed(instance, owner) ||
       this.claimed.has(instance) ||
       [...this.sessions.values()].some((s) => s.dto.idInstance === instance)
     )
@@ -188,7 +237,7 @@ export class MaxSessions {
         connectionId: randomUUID(),
         idInstance: instance,
         account: (settings.wid ?? "").slice(0, 200),
-        expiresAt: this.now() + SESSION_MS,
+        expiresAt: 0,
         chats: [],
         contacts: [],
         messages: [],
@@ -215,6 +264,7 @@ export class MaxSessions {
       }
       if (generation !== (this.generations.get(owner) ?? 0))
         throw new MaxError("Подключение отменено.", "forbidden");
+      this.saved?.save(owner, credentials, dto.connectionId);
       return structuredClone(dto);
     } catch (error) {
       client.close();
@@ -226,7 +276,10 @@ export class MaxSessions {
     }
   }
   disconnect(owner: number, connectionId: string): void {
-    this.session(owner, connectionId);
+    const activeId =
+      this.status(owner)?.connectionId ?? this.saved?.get(owner)?.connectionId;
+    if (activeId !== connectionId)
+      throw new MaxError("Подключение не найдено.", "not_found");
     this.disconnectOwner(owner);
   }
   private chat(s: MaxSession, chatId: string): MaxChatDto {

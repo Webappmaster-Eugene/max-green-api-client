@@ -12,7 +12,6 @@ import {
 import { IconLogout, IconUnlink } from "@tabler/icons-react";
 import { UserManager } from "../../../features/user-access";
 import { PasswordForm } from "../../../features/change-password";
-import { formatTime } from "../../../shared/lib";
 import type { AccountPanelProps } from "../model/types";
 
 export function AccountPanel({
@@ -32,6 +31,7 @@ export function AccountPanel({
       title="Аккаунт и настройки"
       position="right"
       size="md"
+      closeButtonProps={{ "aria-label": "Закрыть настройки" }}
     >
       <Stack gap="lg">
         <Group justify="space-between">
@@ -41,8 +41,9 @@ export function AccountPanel({
           </Badge>
         </Group>
         <Text size="sm" c="dimmed">
-          Вход на сайт действует до {formatTime(identity.expiresAt)}. При выходе
-          ключ MAX удаляется из памяти.
+          Вход сохраняется при закрытии страницы и перезапуске сервера. При
+          явном выходе ключ MAX удаляется, остальные реквизиты остаются для
+          входа по ключу.
         </Text>
         {connection && (
           <Stack gap="sm">
@@ -51,8 +52,8 @@ export function AccountPanel({
               Аккаунт: {connection.account || connection.idInstance}
             </Text>
             <Text size="xs" c="dimmed">
-              Подключение до {formatTime(connection.expiresAt)}. Для одного
-              инстанса используйте один клиент.
+              Подключение сохранено до вашего выхода. Для одного инстанса
+              используйте один клиент.
             </Text>
             <Button
               variant="light"

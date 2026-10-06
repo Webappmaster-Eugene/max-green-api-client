@@ -54,6 +54,27 @@ export const userStoreSchema = z
     )
       ctx.addIssue({ code: "custom", message: "Duplicate user" });
   });
+export const storedAuthGrantSchema = z
+  .object({
+    user: userSchema,
+    jti: z.string().uuid(),
+    csrf: z.string().regex(/^[a-f0-9]{64}$/),
+    expiresAt: z.number().int().positive(),
+    version: z.number().int().nonnegative(),
+  })
+  .strict();
+export const authStoreSchema = z
+  .object({
+    version: z.literal(1),
+    sessions: z.array(storedAuthGrantSchema).max(500),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (
+      new Set(value.sessions.map((s) => s.jti)).size !== value.sessions.length
+    )
+      ctx.addIssue({ code: "custom", message: "Duplicate auth session" });
+  });
 export const jwtPayloadSchema = z.object({
   sub: z.string().regex(/^\d+$/),
   jti: z.string().uuid(),

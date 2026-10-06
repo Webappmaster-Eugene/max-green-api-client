@@ -1,6 +1,9 @@
 import type { z } from "zod";
 import type {
   maxConnectSchema,
+  maxProfileSchema,
+  maxSavedStateSchema,
+  maxReconnectSchema,
   maxSendSchema,
   maxSessionSchema,
   maxMessageSchema,
@@ -12,6 +15,9 @@ import type {
   maxReactionSchema,
   messageTargetSchema,
 } from "../contracts/max.js";
+export type MaxSavedState = z.infer<typeof maxSavedStateSchema>;
+export type MaxProfile = z.infer<typeof maxProfileSchema>;
+export type MaxReconnectInput = z.infer<typeof maxReconnectSchema>;
 export type MaxConnectInput = z.infer<typeof maxConnectSchema>;
 export type MaxSendInput = z.infer<typeof maxSendSchema>;
 export type MaxUploadInput = z.infer<typeof maxUploadSchema>;

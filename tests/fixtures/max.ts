@@ -9,12 +9,14 @@ export const credentials: MaxConnectInput = {
   apiTokenInstance: "fixture_not_a_real_green_token",
   accountConsent: true,
 };
-export function maxFixture() {
+import { SavedConnections } from "../../src/max/connections.js";
+export function maxFixture(saved?: SavedConnections) {
   let time = Date.now();
   let notification: unknown = null;
   let ack = true;
   let sendFailure = false;
   let state = "authorized";
+  let connectStatus: number | undefined;
   const calls: { method: string; body: unknown }[] = [];
   const history = [
     {
@@ -52,6 +54,10 @@ export function maxFixture() {
     let data: unknown;
     switch (method) {
       case "getStateInstance":
+        if (connectStatus)
+          return new Response("fixture provider failure", {
+            status: connectStatus,
+          });
         data = { stateInstance: state };
         break;
       case "getSettings":
@@ -116,6 +122,7 @@ export function maxFixture() {
   const sessions = new MaxSessions(
     (c) => new GreenMaxClient(c, fetcher),
     () => time,
+    saved,
   );
   const envelope = (body: object) => ({
     receiptId: 1,
@@ -127,6 +134,15 @@ export function maxFixture() {
   });
   return {
     sessions,
+    createSessions: (saved: SavedConnections) =>
+      new MaxSessions(
+        (c) => new GreenMaxClient(c, fetcher),
+        () => time,
+        saved,
+      ),
+    failConnect: (status?: number) => {
+      connectStatus = status;
+    },
     calls,
     history,
     advance: (ms: number) => {

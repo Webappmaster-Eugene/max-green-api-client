@@ -16,6 +16,7 @@ import {
 } from "../contracts/auth.js";
 import {
   maxConnectSchema,
+  maxReconnectSchema,
   maxChatSchema,
   maxConnectionSchema,
   maxSendSchema,
@@ -84,7 +85,7 @@ export function createApp({
         auth.verifyCsrf(grant, c.req.header("X-CSRF-Token"));
       if (c.req.path.startsWith("/api/admin/") && grant.user.role !== "admin")
         throw new AppError("Требуются права администратора.", 403);
-      if (c.req.path.endsWith("/connect"))
+      if (c.req.path.endsWith("/connect") || c.req.path.endsWith("/reconnect"))
         limiter.consume(`${grant.user.id}:connect`, 5);
       if (
         ["/api/max/send", "/api/max/upload", "/api/max/forward"].includes(
@@ -128,8 +129,16 @@ export function createApp({
     });
     return result.session;
   });
-  app.get("/api/auth/session", (c) => {
+  app.get("/api/auth/session", async (c) => {
     const grant = c.get("grant");
+    const renewed = await auth.renew(grant);
+    if (renewed) {
+      setCookie(c, cookie, renewed.token, {
+        ...cookieOptions,
+        maxAge: AUTH_TTL_SECONDS,
+      });
+      return c.json({ ok: true, data: renewed.session });
+    }
     return c.json({
       ok: true,
       data: {
@@ -176,8 +185,14 @@ export function createApp({
     sessions.disconnectOwner(input.id);
     return { done: true };
   });
-  app.get("/api/max", (c) =>
-    c.json({ ok: true, data: sessions.status(c.get("grant").user.id) }),
+  app.get("/api/max", async (c) =>
+    c.json({ ok: true, data: await sessions.restore(c.get("grant").user.id) }),
+  );
+  app.get("/api/max/profile", (c) =>
+    c.json({ ok: true, data: sessions.savedState(c.get("grant").user.id) }),
+  );
+  post("/api/max/reconnect", maxReconnectSchema, (c, input) =>
+    sessions.reconnect(c.get("grant").user.id, input),
   );
   post("/api/max/connect", maxConnectSchema, (c, input) =>
     sessions.connect(c.get("grant").user.id, input),

@@ -51,6 +51,8 @@ async function messengerFixture(page: Page) {
   let sends = 0;
   await page.route("**/api/max**", async (route) => {
     const path = new URL(route.request().url()).pathname;
+    if (path === "/api/max/profile")
+      return route.fulfill({ json: { ok: true, data: null } });
     let data: unknown = session;
     if (path.endsWith("/history") && !session.messages.length)
       session.messages = [
@@ -341,4 +343,83 @@ test("administrator creates a user and can revoke site access", async ({
     .getByRole("button", { name: "Отключить доступ", exact: true })
     .click();
   await expect(userRow.getByText("Отключён", { exact: true })).toBeVisible();
+});
+
+test("saved MAX survives reload, provider failure and explicit exit offers key-only login", async ({
+  page,
+}) => {
+  const saved = {
+    profile: {
+      apiUrl: "https://3100.api.green-api.com",
+      mediaUrl: "https://3100.api.green-api.com",
+      idInstance: "3100000001",
+    },
+    connectionId: "d72c3040-32e0-4f79-86d5-23d103cff213",
+    connected: true,
+  };
+  const session = {
+    connectionId: saved.connectionId,
+    idInstance: saved.profile.idInstance,
+    account: "Fixture",
+    expiresAt: 0,
+    canUpload: true,
+    chats: [{ id: "100", title: "Анна" }],
+    contacts: [],
+    messages: [],
+  };
+  let failed = true;
+  let enteredKey = false;
+  await page.route("**/api/max**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith("/profile"))
+      return route.fulfill({ json: { ok: true, data: saved } });
+    if (path.endsWith("/disconnect")) {
+      saved.connected = false;
+      return route.fulfill({ json: { ok: true, data: { done: true } } });
+    }
+    if (path.endsWith("/reconnect")) {
+      expect(route.request().postDataJSON()).toEqual({
+        apiTokenInstance: "fixture_not_a_real_green_token",
+      });
+      enteredKey = true;
+      saved.connected = true;
+    }
+    if (failed)
+      return route.fulfill({
+        status: 429,
+        json: {
+          ok: false,
+          code: "provider_quota",
+          error: "Достигнут лимит GREEN-API.",
+        },
+      });
+    return route.fulfill({
+      json: { ok: true, data: saved.connected ? session : null },
+    });
+  });
+  await login(page);
+  await expect(
+    page.getByRole("button", { name: "Повторить подключение" }),
+  ).toBeVisible();
+  await expect(page.getByLabel(/^Ключ GREEN-API/)).toHaveCount(0);
+  failed = false;
+  await page.getByRole("button", { name: "Повторить подключение" }).click();
+  await expect(page.getByRole("button", { name: /Анна/ })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("button", { name: /Анна/ })).toBeVisible();
+  await expect(page.getByLabel(/^Ключ GREEN-API/)).toHaveCount(0);
+  await page.getByRole("button", { name: "Аккаунт и настройки" }).click();
+  await page.getByRole("button", { name: "Отключить MAX" }).click();
+  await page
+    .getByRole("button", { name: "Закрыть настройки", exact: true })
+    .click();
+  await expect(page.getByLabel(/^Ключ GREEN-API/)).toBeVisible();
+  await expect(page.getByLabel(/^Адрес API/)).toHaveCount(0);
+  await expect(page.getByLabel(/^Номер инстанса/)).toHaveCount(0);
+  await page
+    .getByLabel(/^Ключ GREEN-API/)
+    .fill("fixture_not_a_real_green_token");
+  await page.getByRole("button", { name: "Войти в MAX" }).click();
+  await expect(page.getByRole("button", { name: /Анна/ })).toBeVisible();
+  expect(enteredKey).toBe(true);
 });

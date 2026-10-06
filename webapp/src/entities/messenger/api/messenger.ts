@@ -2,12 +2,14 @@ import type { z } from "zod";
 import { request } from "../../../shared/api";
 import {
   maxSessionSchema,
+  maxSavedStateSchema,
   maxChatDtoSchema,
   maxMessageSchema,
   doneSchema,
 } from "../../../shared/contracts";
 import type {
   MaxConnectInput,
+  MaxReconnectInput,
   MaxSendInput,
   MaxEditInput,
   MaxDeleteInput,
@@ -24,6 +26,10 @@ const post = <T extends z.ZodTypeAny>(
   request(path, schema, { method: "POST", body, signal });
 export const getConnection = (signal?: AbortSignal) =>
   request("/api/max", maxSessionSchema.nullable(), { signal });
+export const getSavedConnection = (signal?: AbortSignal) =>
+  request("/api/max/profile", maxSavedStateSchema.nullable(), { signal });
+export const reconnectMax = (input: MaxReconnectInput) =>
+  post("/api/max/reconnect", maxSessionSchema, input);
 export const connectMax = (input: MaxConnectInput) =>
   post("/api/max/connect", maxSessionSchema, input);
 export const disconnectMax = (connectionId: string) =>

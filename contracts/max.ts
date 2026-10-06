@@ -22,6 +22,18 @@ export const maxConnectSchema = z
     accountConsent: z.literal(true),
   })
   .strict();
+export const maxProfileSchema = maxConnectSchema.omit({
+  apiTokenInstance: true,
+  accountConsent: true,
+});
+export const maxSavedStateSchema = z.object({
+  profile: maxProfileSchema,
+  connected: z.boolean(),
+  connectionId: z.string().uuid(),
+});
+export const maxReconnectSchema = maxConnectSchema.pick({
+  apiTokenInstance: true,
+});
 export const maxConnectionSchema = z
   .object({ connectionId: z.string().uuid() })
   .strict();

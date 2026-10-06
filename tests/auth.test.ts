@@ -34,7 +34,12 @@ async function fixture() {
     },
   ]);
   let now = Date.now();
-  const auth = new AuthSessions(users, { secret, origin, now: () => now });
+  const auth = new AuthSessions(users, {
+    secret,
+    origin,
+    now: () => now,
+    ttlSeconds: 8 * 3600,
+  });
   return {
     auth,
     users,
@@ -138,6 +143,51 @@ test("user accounts persist privately and corrupt storage fails closed", async (
     await writeFile(file, "invalid JSON");
     await assert.rejects(UserRepository.open(file, bootstrap));
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("persistent JWT survives restart, renews and stays revoked after explicit logout", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "max-auth-sessions-"));
+  const f = await fixture();
+  let now = Date.now();
+  const options = {
+    secret,
+    origin,
+    storageDirectory: dir,
+    ttlSeconds: 60,
+    now: () => now,
+  };
+  let auth = new AuthSessions(f.users, options);
+  try {
+    const login = await auth.login({ login: "member", password });
+    auth.close();
+    auth = new AuthSessions(f.users, options);
+    const grant = await auth.verify(login.token);
+    assert.equal(grant.user.id, 2);
+    now += 31000;
+    const renewed = await auth.renew(await auth.verify(login.token));
+    assert.ok(renewed);
+    now += 31000;
+    await assert.rejects(auth.verify(login.token), { status: 401 });
+    const fresh = await auth.verify(renewed.token);
+    auth.logout(fresh.jti);
+    auth.close();
+    auth = new AuthSessions(f.users, options);
+    await assert.rejects(auth.verify(renewed.token), { status: 401 });
+    assert.equal(
+      (await stat(join(dir, "auth-sessions.enc"))).mode & 0o777,
+      0o600,
+    );
+    assert.equal(
+      (await readFile(join(dir, "auth-sessions.enc"))).includes(
+        Buffer.from(fresh.csrf),
+      ),
+      false,
+    );
+  } finally {
+    auth.close();
+    f.auth.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
