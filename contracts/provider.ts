@@ -25,6 +25,10 @@ export const sendResultSchema = z.object({
   idMessage: messageIdSchema,
   urlFile: z.string().optional(),
 });
+export const downloadFileSchema = z.object({
+  downloadUrl: z.string().min(1).max(2000),
+  downloadUrlJpeg: z.string().max(2000).optional(),
+});
 export const accountResultSchema = z.object({
   exist: z.boolean(),
   chatId: chatIdSchema.optional(),

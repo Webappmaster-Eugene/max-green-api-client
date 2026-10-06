@@ -1,6 +1,10 @@
 import { FILE_EXTENSIONS, MAX_FILE_SIZE } from "../../contracts/constants.js";
 import { MaxError } from "./error.js";
-import type { DownloadedMedia } from "../../types/internal.js";
+import type {
+  DownloadedMedia,
+  DownloadedAttachment,
+  MediaResolver,
+} from "../../types/internal.js";
 
 export function safeMediaUrl(raw?: string): string | undefined {
   if (!raw) return undefined;
@@ -11,7 +15,7 @@ export function safeMediaUrl(raw?: string): string | undefined {
       url.username ||
       url.password ||
       url.port ||
-      !/^(?:(?:media-\d+|sw-media(?:-\d+|-in|-out)?)\.storage\.yandexcloud\.net|(?:\d+\.)?media\.green-api\.com)$/.test(
+      !/^(?:(?:media(?:in|out)?-\d+|sw-media(?:-\d+|-in|-out)?)\.storage\.yandexcloud\.net|(?:\d+\.)?media\.green-api\.com)$/.test(
         url.hostname,
       )
     )
@@ -51,6 +55,35 @@ export function validateUpload(file: File): void {
     );
 }
 
+export class ExpiredMediaError extends MaxError {
+  constructor() {
+    super(
+      "Ссылка на файл недействительна. Попробуйте открыть вложение ещё раз.",
+      "unavailable",
+    );
+  }
+}
+
+export async function downloadAttachment(
+  resolve: MediaResolver,
+  fetcher: typeof fetch = fetch,
+): Promise<DownloadedAttachment> {
+  let source = await resolve(false);
+  try {
+    return {
+      ...(await downloadMedia(source.url, fetcher)),
+      message: source.message,
+    };
+  } catch (error) {
+    if (!(error instanceof ExpiredMediaError)) throw error;
+    source = await resolve(true);
+    return {
+      ...(await downloadMedia(source.url, fetcher)),
+      message: source.message,
+    };
+  }
+}
+
 export async function downloadMedia(
   url: string,
   fetcher: typeof fetch = fetch,
@@ -65,6 +98,10 @@ export async function downloadMedia(
     });
   } catch {
     throw new MaxError("Не удалось скачать вложение.", "unavailable");
+  }
+  if ([401, 403, 404, 410].includes(response.status)) {
+    await response.body?.cancel();
+    throw new ExpiredMediaError();
   }
   if (!response.ok || !response.body)
     throw new MaxError(

@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import { createHash, randomUUID } from "node:crypto";
 import type { z } from "zod";
 import { SavedConnections } from "./connections.js";
@@ -16,6 +17,7 @@ import {
   maxUploadSchema,
 } from "../../contracts/max.js";
 import {
+  downloadFileSchema,
   stateSchema,
   settingsSchema,
   directorySchema,
@@ -252,6 +254,9 @@ export class MaxSessions {
         attempts: new Map(),
         historyCounts: new Map(),
         media: new Map(),
+        mediaRequests: new Map(),
+        mediaQueue: Promise.resolve(),
+        mediaNextAt: 0,
       };
       this.sessions.set(owner, session);
       try {
@@ -475,7 +480,7 @@ export class MaxSessions {
                     : "document",
               fileName: safeFileName(file.name),
               mimeType,
-              available: !!mediaUrl,
+              available: true,
             },
             quote: quote
               ? { id: quote.id, text: quote.text, sender: quote.sender }
@@ -605,16 +610,65 @@ export class MaxSessions {
       return structuredClone(s.dto);
     });
   }
-  media(owner: number, target: MessageTarget): MediaSource {
+  async media(
+    owner: number,
+    target: MessageTarget,
+    refresh = false,
+  ): Promise<MediaSource> {
+    if (!this.sessions.has(owner)) await this.restore(owner);
     const s = this.session(owner, target.connectionId);
     const message = this.message(s, target.chatId, target.messageId);
-    const url = s.media.get(`${target.chatId}:${target.messageId}`);
-    if (!url || !message.attachment)
-      throw new MaxError(
-        "Вложение пока недоступно. Обновите историю.",
-        "not_found",
-      );
-    return { url, message: structuredClone(message) };
+    if (!message.attachment) fail("Сообщение не содержит вложения.");
+    const key = `${target.chatId}:${target.messageId}`;
+    let url = s.media.get(key);
+    if (!url || refresh) {
+      let request = s.mediaRequests.get(key);
+      if (!request) {
+        request = s.mediaQueue.then(async () => {
+          const wait = Math.max(0, s.mediaNextAt - Date.now());
+          if (wait) await delay(wait);
+          this.session(owner, target.connectionId);
+          this.message(s, target.chatId, target.messageId);
+          s.mediaNextAt = Date.now() + 1100;
+          const result = checked(
+            downloadFileSchema,
+            await s.client.call("downloadFile", "POST", {
+              chatId: target.chatId,
+              idMessage: target.messageId,
+            }),
+          );
+          const url = safeMediaUrl(result.downloadUrl);
+          if (!url)
+            throw new MaxError(
+              "GREEN-API не вернул безопасную ссылку на файл.",
+              "unavailable",
+            );
+          this.session(owner, target.connectionId);
+          const current = this.message(s, target.chatId, target.messageId);
+          if (!current.attachment) fail("Сообщение не содержит вложения.");
+          current.attachment.available = true;
+          s.media.set(key, url);
+          return url;
+        });
+        s.mediaRequests.set(key, request);
+        s.mediaQueue = request.then(
+          () => {},
+          () => {},
+        );
+      }
+      try {
+        url = await request;
+      } finally {
+        if (s.mediaRequests.get(key) === request) s.mediaRequests.delete(key);
+      }
+    }
+    this.session(owner, target.connectionId);
+    return {
+      url,
+      message: structuredClone(
+        this.message(s, target.chatId, target.messageId),
+      ),
+    };
   }
   private updatePreview(s: MaxSession, m: MaxMessageDto): void {
     const chat = s.dto.chats.find((c) => c.id === m.chatId);
@@ -629,6 +683,8 @@ export class MaxSessions {
     notify = false,
   ): void {
     const m = normalized.message;
+    if (m.attachment && s.media.has(`${m.chatId}:${m.id}`))
+      m.attachment.available = true;
     if (normalized.mediaUrl)
       s.media.set(`${m.chatId}:${m.id}`, normalized.mediaUrl);
     const previous = s.dto.messages.find(

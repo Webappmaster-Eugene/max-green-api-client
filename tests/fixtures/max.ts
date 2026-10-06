@@ -17,6 +17,9 @@ export function maxFixture(saved?: SavedConnections) {
   let sendFailure = false;
   let state = "authorized";
   let connectStatus: number | undefined;
+  let mediaUrl =
+    "https://media-3100.storage.yandexcloud.net/fixture/resolved.png";
+  let uploadWithoutUrl = false;
   const calls: { method: string; body: unknown }[] = [];
   const history = [
     {
@@ -82,6 +85,11 @@ export function maxFixture(saved?: SavedConnections) {
       case "getChatHistory":
         data = [...history].reverse();
         break;
+      case "downloadFile":
+        data = {
+          downloadUrl: mediaUrl,
+        };
+        break;
       case "checkAccount":
         data = { exist: true, chatId: "100" };
         break;
@@ -90,8 +98,9 @@ export function maxFixture(saved?: SavedConnections) {
         if (sendFailure) throw new Error("Transport fixture failure");
         data = {
           idMessage: `sent-${calls.filter((c) => ["sendMessage", "sendFileByUpload"].includes(c.method)).length}`,
-          urlFile:
-            "https://sw-media-3100.storage.yandexcloud.net/fixture/file.txt",
+          urlFile: uploadWithoutUrl
+            ? undefined
+            : "https://sw-media-3100.storage.yandexcloud.net/fixture/file.txt",
         };
         break;
       case "editMessage":
@@ -134,6 +143,12 @@ export function maxFixture(saved?: SavedConnections) {
   });
   return {
     sessions,
+    setMediaUrl: (value: string) => {
+      mediaUrl = value;
+    },
+    omitUploadUrl: () => {
+      uploadWithoutUrl = true;
+    },
     createSessions: (saved: SavedConnections) =>
       new MaxSessions(
         (c) => new GreenMaxClient(c, fetcher),

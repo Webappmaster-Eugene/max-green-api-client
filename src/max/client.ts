@@ -83,6 +83,7 @@ export class GreenMaxClient {
         "getChats",
         "getContacts",
         "getChatHistory",
+        "downloadFile",
         "checkAccount",
       ].includes(method),
     );

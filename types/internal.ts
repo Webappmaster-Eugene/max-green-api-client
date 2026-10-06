@@ -14,9 +14,16 @@ export interface MaxSession {
   attempts: Map<string, SendAttempt>;
   historyCounts: Map<string, number>;
   media: Map<string, string>;
+  mediaRequests: Map<string, Promise<string>>;
+  mediaQueue: Promise<void>;
+  mediaNextAt: number;
 }
 export interface MediaSource {
   url: string;
+  message: MaxMessageDto;
+}
+export type MediaResolver = (refresh: boolean) => Promise<MediaSource>;
+export interface DownloadedAttachment extends DownloadedMedia {
   message: MaxMessageDto;
 }
 export interface DownloadedMedia {

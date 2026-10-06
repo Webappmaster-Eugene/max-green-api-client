@@ -71,7 +71,7 @@ export function normalizeHistory(
           kind: fileKind,
           fileName,
           mimeType: mediaMimeType(fileName, row.mimeType),
-          available: !!mediaUrl,
+          available: true,
         }
       : undefined,
     deleted: row.isDeleted || !!row.deletedMessageId,

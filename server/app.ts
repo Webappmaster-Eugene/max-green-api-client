@@ -5,7 +5,7 @@ import type { z } from "zod";
 import { AppError } from "./lib/error.js";
 import { RateLimiter } from "./lib/rateLimit.js";
 import { MaxError } from "../src/max/error.js";
-import { downloadMedia } from "../src/max/media.js";
+import { downloadAttachment } from "../src/max/media.js";
 import { AUTH_TTL_SECONDS, MAX_FILE_SIZE } from "../contracts/constants.js";
 import {
   loginSchema,
@@ -260,9 +260,10 @@ export function createApp({
   app.get("/api/max/media", async (c) => {
     const query = mediaQuerySchema.safeParse(c.req.query());
     if (!query.success) throw new AppError("Некорректное вложение.");
-    const media = sessions.media(c.get("grant").user.id, query.data);
-    const result = await downloadMedia(media.url);
-    const fileName = media.message.attachment!.fileName;
+    const result = await downloadAttachment((refresh) =>
+      sessions.media(c.get("grant").user.id, query.data, refresh),
+    );
+    const fileName = result.message.attachment!.fileName;
     c.header(
       "Content-Disposition",
       `attachment; filename="file"; filename*=UTF-8''${encodeURIComponent(fileName).replace(/'/g, "%27")}`,

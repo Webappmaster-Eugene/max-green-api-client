@@ -156,23 +156,17 @@ export function MessageBubble({
                   <Text size="sm" lineClamp={2}>
                     {media.fileName}
                   </Text>
-                  {media.available ? (
-                    <Button
-                      variant="subtle"
-                      size="compact-xs"
-                      loading={loading}
-                      onClick={() => void loadMedia(true)}
-                    >
-                      Скачать
-                    </Button>
-                  ) : (
-                    <Text size="xs" c="dimmed">
-                      Обновите историю для загрузки
-                    </Text>
-                  )}
+                  <Button
+                    variant="subtle"
+                    size="compact-xs"
+                    loading={loading}
+                    onClick={() => void loadMedia(true)}
+                  >
+                    Скачать
+                  </Button>
                 </Stack>
               </Group>
-              {previewable && media.available && (
+              {previewable && (
                 <Button
                   variant="subtle"
                   size="compact-xs"

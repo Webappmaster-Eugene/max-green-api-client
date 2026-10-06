@@ -35,7 +35,7 @@ it("loads video through the authenticated transport and displays a controlled pl
             kind: "video",
             fileName: "clip.mp4",
             mimeType: "video/mp4",
-            available: true,
+            available: false,
           },
         }}
       />

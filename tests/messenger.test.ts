@@ -154,14 +154,14 @@ test("incoming media, external edits/deletes and duplicate events are retained b
       messageId: "image",
     };
     assert.ok(
-      f.sessions
-        .media(1, target)
-        .url.startsWith("https://sw-media-3100.storage.yandexcloud.net/"),
+      (await f.sessions.media(1, target)).url.startsWith(
+        "https://sw-media-3100.storage.yandexcloud.net/",
+      ),
     );
     assert.ok(
       !JSON.stringify(f.sessions.status(1)).includes("storage.yandexcloud.net"),
     );
-    assert.throws(() => f.sessions.media(2, target), { code: "not_found" });
+    await assert.rejects(f.sessions.media(2, target), { code: "not_found" });
     f.notify({
       typeWebhook: "incomingMessageReceived",
       idMessage: "edit-event",
@@ -195,7 +195,7 @@ test("incoming media, external edits/deletes and duplicate events are retained b
     f.ack(true);
     const deleted = await f.sessions.poll(1, c.connectionId);
     assert.equal(deleted.messages.find((m) => m.id === "image")?.deleted, true);
-    assert.throws(() => f.sessions.media(1, target));
+    await assert.rejects(f.sessions.media(1, target));
     await f.sessions.react(1, {
       connectionId: c.connectionId,
       chatId: "100",
