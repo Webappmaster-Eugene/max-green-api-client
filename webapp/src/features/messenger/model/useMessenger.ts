@@ -12,9 +12,11 @@ import type { MessageDraft } from "./types";
 export function useMessenger() {
   const [session, setSession] = useState<MaxSessionDto | null>(null);
   const [loading, setLoading] = useState(true);
+  const [authRequired, setAuthRequired] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [pollError, setPollError] = useState("");
+  const [pollPaused, setPollPaused] = useState(false);
   const [selected, setSelected] = useState("");
   const [historyLoading, setHistoryLoading] = useState(false);
   const [counts, setCounts] = useState<Record<string, number>>({});
@@ -22,7 +24,9 @@ export function useMessenger() {
   const operating = useRef(false);
   const polling = useRef<Promise<void> | null>(null);
   const selectedRef = useRef(selected);
-  selectedRef.current = selected;
+  useEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
   const live = useRef(true);
   const requestIds = useRef(new Map<string, string>());
   const connectionId = session?.connectionId;
@@ -36,7 +40,11 @@ export function useMessenger() {
         if (live.current) setSession(data);
       })
       .catch((error) => {
-        if (!controller.signal.aborted) setError(messageError(error));
+        if (!controller.signal.aborted) {
+          setError(messageError(error));
+          if (error instanceof ApiError && error.status === 401)
+            setAuthRequired(true);
+        }
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
@@ -48,7 +56,7 @@ export function useMessenger() {
   }, []);
 
   useEffect(() => {
-    if (!connectionId) return;
+    if (!connectionId || pollPaused) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     let failures = 0;
@@ -67,8 +75,12 @@ export function useMessenger() {
           })
           .catch((error) => {
             if (controller.signal.aborted) return;
+            if (error instanceof ApiError && error.status === 401)
+              setAuthRequired(true);
             failures++;
             setPollError(messageError(error));
+            if (error instanceof ApiError && error.code === "provider_quota")
+              setPollPaused(true);
             if (error instanceof ApiError && error.status === 404) {
               setSession(null);
               setSelected("");
@@ -90,7 +102,7 @@ export function useMessenger() {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [connectionId]);
+  }, [connectionId, pollPaused]);
 
   const run = useCallback(
     async (work: () => Promise<void>): Promise<boolean> => {
@@ -106,6 +118,8 @@ export function useMessenger() {
       } catch (error) {
         if (live.current) {
           setError(messageError(error));
+          if (error instanceof ApiError && error.status === 401)
+            setAuthRequired(true);
           if (error instanceof ApiError && error.status === 404) {
             setSession(null);
             setSelected("");
@@ -154,6 +168,7 @@ export function useMessenger() {
       setSession(await messenger.connectMax(input));
       setSelected("");
       setPollError("");
+      setPollPaused(false);
       setCounts({});
       setDrafts({});
       requestIds.current.clear();
@@ -327,9 +342,15 @@ export function useMessenger() {
   return {
     session,
     loading,
+    authRequired,
     busy,
     error,
     pollError,
+    pollPaused,
+    resumePolling: () => {
+      setPollPaused(false);
+      setPollError("");
+    },
     selected,
     historyLoading,
     counts,

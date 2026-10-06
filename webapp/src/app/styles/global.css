@@ -264,3 +264,9 @@ textarea {
     transition-duration: 0.01ms !important;
   }
 }
+
+@media (max-width: 699px) {
+  .desktop-hint {
+    display: none;
+  }
+}

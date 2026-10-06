@@ -263,6 +263,7 @@ export function createApp({
     c.json(
       {
         ok: false,
+        code: error instanceof MaxError ? error.code : undefined,
         error:
           error instanceof AppError || error instanceof MaxError
             ? error.message

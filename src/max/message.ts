@@ -7,7 +7,7 @@ import type {
   NormalizedMessage,
 } from "../../types/provider.js";
 import type { MaxMessageDto } from "../../types/max.js";
-import { safeFileName, safeMediaUrl } from "./media.js";
+import { safeFileName, safeMediaUrl, mediaMimeType } from "./media.js";
 
 export function normalizeHistory(
   row: ProviderHistoryMessage,
@@ -25,6 +25,11 @@ export function normalizeHistory(
       ? fileKinds[row.typeMessage as keyof typeof fileKinds]
       : undefined;
   const mediaUrl = safeMediaUrl(row.downloadUrl);
+  const fileName = safeFileName(
+    row.fileName ||
+      (mediaUrl ? new URL(mediaUrl).pathname.split("/").at(-1) : undefined) ||
+      "Вложение",
+  );
   const status = messageStatusSchema.safeParse(row.statusMessage);
   const quoteId = messageIdSchema.safeParse(
     row.quotedMessage?.idMessage || row.quotedMessage?.stanzaId,
@@ -64,8 +69,8 @@ export function normalizeHistory(
     attachment: fileKind
       ? {
           kind: fileKind,
-          fileName: safeFileName(row.fileName || "Вложение"),
-          mimeType: row.mimeType || "application/octet-stream",
+          fileName,
+          mimeType: mediaMimeType(fileName, row.mimeType),
           available: !!mediaUrl,
         }
       : undefined,

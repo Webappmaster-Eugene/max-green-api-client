@@ -10,6 +10,7 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    readonly code?: string,
   ) {
     super(message);
     this.name = "ApiError";
@@ -67,6 +68,7 @@ export async function request<T extends z.ZodTypeAny>(
     throw new ApiError(
       response.status,
       parsed.success ? parsed.data.error : "Не удалось выполнить запрос.",
+      parsed.success ? parsed.data.code : undefined,
     );
   }
   const parsed = apiResponseSchema(schema).safeParse(raw);
@@ -80,3 +82,22 @@ export async function request<T extends z.ZodTypeAny>(
 
 export const messageError = (error: unknown): string =>
   error instanceof Error ? error.message : "Не удалось выполнить действие.";
+
+export async function requestMedia(
+  path: string,
+  signal: AbortSignal,
+): Promise<Blob> {
+  const response = await fetch(path, { credentials: "same-origin", signal });
+  if (!response.ok) {
+    const parsed = errorResponseSchema.safeParse(
+      await response.json().catch(() => null),
+    );
+    throw new ApiError(
+      response.status,
+      parsed.success
+        ? parsed.data.error
+        : "Вложение недоступно. Обновите историю и повторите.",
+    );
+  }
+  return response.blob();
+}

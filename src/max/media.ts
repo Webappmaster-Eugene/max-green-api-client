@@ -11,7 +11,7 @@ export function safeMediaUrl(raw?: string): string | undefined {
       url.username ||
       url.password ||
       url.port ||
-      !/^(?:sw-media-\d+\.storage\.yandexcloud\.net|(?:\d+\.)?media\.green-api\.com)$/.test(
+      !/^(?:(?:media-\d+|sw-media(?:-\d+|-in|-out)?)\.storage\.yandexcloud\.net|(?:\d+\.)?media\.green-api\.com)$/.test(
         url.hostname,
       )
     )
@@ -27,7 +27,12 @@ export function safeFileName(value: string): string {
     value
       .split(/[\\/]/)
       .at(-1)
-      ?.replace(/[\x00-\x1f\x7f]/g, "") || "file";
+      ?.split("")
+      .filter(
+        (character) =>
+          character.charCodeAt(0) > 31 && character.charCodeAt(0) !== 127,
+      )
+      .join("") || "file";
   if (name.length <= 180) return name;
   const extension = name.match(/\.[a-z0-9]{1,10}$/i)?.[0] ?? "";
   return name.slice(0, 180 - extension.length) + extension;
@@ -102,4 +107,28 @@ export async function downloadMedia(
       response.headers.get("Content-Type")?.split(";")[0].trim() ||
       "application/octet-stream",
   };
+}
+
+export function mediaMimeType(fileName: string, mimeType?: string): string {
+  if (mimeType && mimeType !== "application/octet-stream") return mimeType;
+  const types: Record<string, string> = {
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    png: "image/png",
+    gif: "image/gif",
+    webp: "image/webp",
+    mp4: "video/mp4",
+    m4v: "video/mp4",
+    mov: "video/quicktime",
+    webm: "video/webm",
+    mp3: "audio/mpeg",
+    m4a: "audio/mp4",
+    wav: "audio/wav",
+    ogg: "audio/ogg",
+    pdf: "application/pdf",
+  };
+  return (
+    types[fileName.split(".").at(-1)?.toLowerCase() ?? ""] ??
+    "application/octet-stream"
+  );
 }

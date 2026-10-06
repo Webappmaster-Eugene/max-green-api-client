@@ -76,7 +76,7 @@ export function ChatWorkspace({
       ) : (
         <Box className="chat-workspace">
           <Sidebar controller={controller} />
-          <Conversation controller={controller} />
+          <Conversation key={controller.selected} controller={controller} />
         </Box>
       )}
     </Box>

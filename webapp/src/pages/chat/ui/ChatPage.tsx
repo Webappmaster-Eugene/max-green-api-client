@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Alert, Box, Loader, Stack, Text } from "@mantine/core";
+import { Alert, Box, Button, Loader, Stack, Text } from "@mantine/core";
 import { useMessenger } from "../../../features/messenger";
 import { ChatWorkspace } from "../../../widgets/chat-workspace";
 import { AccountPanel } from "../../../widgets/account-panel";
@@ -33,7 +33,18 @@ export function ChatPage({
       )}
       {controller.pollError && (
         <Alert color="yellow" role="status">
-          {controller.pollError} Получение сообщений повторится автоматически.
+          {controller.pollError}{" "}
+          {controller.pollPaused ? (
+            <Button
+              variant="subtle"
+              size="compact-xs"
+              onClick={controller.resumePolling}
+            >
+              Проверить после изменения настроек
+            </Button>
+          ) : (
+            "Получение сообщений повторится автоматически."
+          )}
         </Alert>
       )}
       {controller.session?.syncWarning && (

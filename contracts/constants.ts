@@ -18,8 +18,11 @@ export const FILE_EXTENSIONS = [
   "ppt",
   "pptx",
   "mp4",
+  "mov",
+  "m4v",
   "webm",
   "mp3",
+  "m4a",
   "wav",
   "ogg",
 ] as const;

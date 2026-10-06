@@ -82,11 +82,6 @@ export function Conversation({ controller }: MessengerViewProps) {
     session?.contacts.find((c) => c.id === selected);
   const draft = drafts[selected] ?? { text: "" };
   useEffect(() => {
-    setSearch("");
-    setSearchOpen(false);
-    preserve.current = null;
-  }, [selected]);
-  useEffect(() => {
     if (historyLoading || !viewport.current) return;
     const saved = preserve.current;
     if (saved) {
@@ -107,7 +102,7 @@ export function Conversation({ controller }: MessengerViewProps) {
     previousChat.current = selected;
     if (messages.at(-1)?.direction === "outgoing")
       previousOutgoing.current = messages.at(-1)!.id;
-  }, [selected, visible.length, historyLoading]);
+  }, [selected, visible.length, historyLoading, messages]);
   const earlier = () => {
     if (viewport.current)
       preserve.current = {
@@ -251,7 +246,7 @@ export function Conversation({ controller }: MessengerViewProps) {
             Загружаем историю…
           </Text>
         )}
-        {!historyLoading && (counts[selected] ?? 0) < 5000 && (
+        {!historyLoading && session.historyPages?.[selected]?.hasMore && (
           <Group justify="center" mb="md">
             <Button
               size="compact-xs"
@@ -266,7 +261,7 @@ export function Conversation({ controller }: MessengerViewProps) {
         {!visible.length && !historyLoading && (
           <Text ta="center" size="sm" c="dimmed" py="xl">
             {search
-              ? "Совпадений в загруженной истории нет. Попробуйте загрузить более ранние сообщения."
+              ? "Совпадений в загруженной истории нет."
               : "Начните разговор — ответы появятся здесь."}
           </Text>
         )}

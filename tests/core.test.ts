@@ -207,3 +207,44 @@ test("mediaUrl rejects untrusted hosts and URL credentials before any request", 
     });
   assert.throws(() => greenApiOrigin("https://3100.media.green-api.com"));
 });
+
+test("temporary provider throttling retries reads but never repeats a send or a quota refusal", async () => {
+  let reads = 0;
+  const client = new GreenMaxClient(credentials, (async () => {
+    reads++;
+    return reads === 1
+      ? new Response(null, { status: 429 })
+      : Response.json({ stateInstance: "authorized" });
+  }) as typeof fetch);
+  try {
+    assert.deepEqual(await client.call("getStateInstance"), {
+      stateInstance: "authorized",
+    });
+    assert.equal(reads, 2);
+  } finally {
+    client.close();
+  }
+  for (const status of [429, 466, 469]) {
+    let calls = 0;
+    const refused = new GreenMaxClient(credentials, (async () => {
+      calls++;
+      return new Response(null, { status });
+    }) as typeof fetch);
+    try {
+      await assert.rejects(
+        refused.call("sendMessage", "POST", { chatId: "100", message: "Test" }),
+        {
+          code:
+            status === 429
+              ? "provider_rate_limit"
+              : status === 466
+                ? "provider_quota"
+                : "limit",
+        },
+      );
+      assert.equal(calls, 1);
+    } finally {
+      refused.close();
+    }
+  }
+});

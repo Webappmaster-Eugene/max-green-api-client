@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
   Alert,
-  Anchor,
   Badge,
   Box,
   Button,
@@ -22,7 +21,7 @@ import {
 } from "@tabler/icons-react";
 import { formatTime } from "../../../shared/lib";
 import { MAX_FILE_SIZE } from "../../../shared/contracts";
-import { messageError } from "../../../shared/api";
+import { messageError, requestMedia } from "../../../shared/api";
 import type { MessageBubbleProps } from "../model/types";
 
 export function MessageBubble({
@@ -47,27 +46,29 @@ export function MessageBubble({
     },
     [preview],
   );
-  const showPreview = async () => {
+  const loadMedia = async (download = false) => {
     setLoading(true);
     setError("");
     const request = new AbortController();
     controller.current = request;
     try {
-      const response = await fetch(url, {
-        credentials: "same-origin",
-        signal: request.signal,
-      });
-      if (!response.ok)
-        throw new Error("Вложение недоступно. Обновите историю и повторите.");
-      const blob = await response.blob();
+      const blob = await requestMedia(url, request.signal);
       if (blob.size > MAX_FILE_SIZE)
         throw new Error("Вложение превышает 10 МБ.");
-      if (!request.signal.aborted)
-        setPreview(
-          URL.createObjectURL(
-            new Blob([blob], { type: message.attachment!.mimeType }),
-          ),
+      if (!request.signal.aborted) {
+        const objectUrl = URL.createObjectURL(
+          new Blob([blob], { type: message.attachment!.mimeType }),
         );
+        if (download) {
+          const link = document.createElement("a");
+          link.href = objectUrl;
+          link.download = message.attachment!.fileName;
+          document.body.append(link);
+          link.click();
+          link.remove();
+          setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+        } else setPreview(objectUrl);
+      }
     } catch (error) {
       if (!request.signal.aborted) setError(messageError(error));
     } finally {
@@ -87,10 +88,20 @@ export function MessageBubble({
             : "Не отправлено";
   const media = message.attachment;
   const previewable =
-    media?.kind === "image" &&
-    ["image/jpeg", "image/png", "image/webp", "image/gif"].includes(
-      media.mimeType,
-    );
+    ["image", "video", "audio"].includes(media?.kind ?? "") &&
+    [
+      "image/jpeg",
+      "image/png",
+      "image/webp",
+      "image/gif",
+      "video/mp4",
+      "video/webm",
+      "video/quicktime",
+      "audio/mpeg",
+      "audio/mp4",
+      "audio/wav",
+      "audio/ogg",
+    ].includes(media?.mimeType ?? "");
   return (
     <Box
       className={`message-bubble ${message.direction}`}
@@ -142,9 +153,14 @@ export function MessageBubble({
                     {media.fileName}
                   </Text>
                   {media.available ? (
-                    <Anchor href={url} size="xs">
+                    <Button
+                      variant="subtle"
+                      size="compact-xs"
+                      loading={loading}
+                      onClick={() => void loadMedia(true)}
+                    >
                       Скачать
-                    </Anchor>
+                    </Button>
                   ) : (
                     <Text size="xs" c="dimmed">
                       Обновите историю для загрузки
@@ -157,10 +173,14 @@ export function MessageBubble({
                   variant="subtle"
                   size="compact-xs"
                   mt="sm"
-                  onClick={showPreview}
+                  onClick={() => void loadMedia()}
                   loading={loading}
                 >
-                  Посмотреть фото
+                  {media.kind === "image"
+                    ? "Посмотреть фото"
+                    : media.kind === "video"
+                      ? "Посмотреть видео"
+                      : "Прослушать аудио"}
                 </Button>
               )}
             </Box>
@@ -207,11 +227,28 @@ export function MessageBubble({
         size="lg"
         centered
       >
-        <Image
-          src={preview}
-          alt={media?.fileName || "Фото из переписки"}
-          fit="contain"
-        />
+        {media?.kind === "video" ? (
+          <video
+            src={preview}
+            controls
+            playsInline
+            preload="metadata"
+            style={{ width: "100%", maxHeight: "70dvh" }}
+          />
+        ) : media?.kind === "audio" ? (
+          <audio
+            src={preview}
+            controls
+            preload="metadata"
+            style={{ width: "100%" }}
+          />
+        ) : (
+          <Image
+            src={preview}
+            alt={media?.fileName || "Фото из переписки"}
+            fit="contain"
+          />
+        )}
       </Modal>
     </Box>
   );

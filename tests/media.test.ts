@@ -54,3 +54,28 @@ test("media downloader disallows redirects and bounds streamed bytes even withou
   );
   assert.equal(calls, 1);
 });
+
+test("MAX storage host variants and missing MIME metadata remain downloadable", async () => {
+  const { normalizeHistory } = await import("../src/max/message.js");
+  for (const host of [
+    "media-3100.storage.yandexcloud.net",
+    "sw-media-out.storage.yandexcloud.net",
+    "sw-media-in.storage.yandexcloud.net",
+  ]) {
+    const normalized = normalizeHistory(
+      {
+        idMessage: "media",
+        chatId: "100",
+        type: "incoming",
+        timestamp: Date.now() / 1000,
+        typeMessage: "videoMessage",
+        downloadUrl: `https://${host}/instance/clip.mp4`,
+      },
+      Date.now(),
+    );
+    assert.equal(normalized.message.attachment?.available, true);
+    assert.equal(normalized.message.attachment?.mimeType, "video/mp4");
+    assert.equal(normalized.message.attachment?.fileName, "clip.mp4");
+    assert.equal(safeMediaUrl(`https://${host}.evil.test/file`), undefined);
+  }
+});

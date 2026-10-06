@@ -263,3 +263,23 @@ test("ambiguous send results are never retried, and logout cancels an in-flight 
     sessions.close();
   }
 });
+
+test("history continuation requires an extra provider row, not merely reaching the page size", async () => {
+  const f = maxFixture();
+  try {
+    const c = await f.sessions.connect(1, credentials);
+    const first = await f.sessions.history(1, c.connectionId, "100", 3);
+    assert.equal(first.historyPages?.["100"].hasMore, false);
+    f.history.push({ ...f.history[0], idMessage: "extra" });
+    const more = await f.sessions.history(1, c.connectionId, "100", 3, true);
+    assert.equal(more.historyPages?.["100"].hasMore, true);
+    assert.equal(more.historyPages?.["100"].requested, 3);
+    const end = await f.sessions.history(1, c.connectionId, "100", 4);
+    assert.equal(end.historyPages?.["100"].hasMore, false);
+    f.history.splice(0);
+    const empty = await f.sessions.history(1, c.connectionId, "200", 100);
+    assert.equal(empty.historyPages?.["200"].hasMore, false);
+  } finally {
+    f.sessions.close();
+  }
+});

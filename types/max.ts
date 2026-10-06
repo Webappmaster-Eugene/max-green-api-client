@@ -26,4 +26,10 @@ export type MaxChatDto = z.infer<typeof maxChatDtoSchema>;
 export type MaxContactDto = MaxChatDto;
 export type MaxSessionDto = z.infer<typeof maxSessionSchema>;
 export type MaxErrorCode =
-  "invalid" | "unavailable" | "forbidden" | "limit" | "not_found";
+  | "invalid"
+  | "unavailable"
+  | "forbidden"
+  | "limit"
+  | "not_found"
+  | "provider_quota"
+  | "provider_rate_limit";

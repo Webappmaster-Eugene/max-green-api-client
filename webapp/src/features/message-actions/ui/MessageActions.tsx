@@ -19,6 +19,7 @@ export function MessageActions({
   onReact,
 }: MessageActionsProps) {
   const [opened, setOpened] = useState(false);
+  const [now, setNow] = useState(Date.now);
   const sent =
     message.direction === "outgoing" &&
     !["queued", "failed"].includes(message.status ?? "sent");
@@ -26,9 +27,11 @@ export function MessageActions({
   return (
     <Menu
       position="bottom-end"
-      withinPortal
       opened={opened}
-      onChange={setOpened}
+      onChange={(value) => {
+        setOpened(value);
+        if (value) setNow(Date.now());
+      }}
     >
       <Menu.Target>
         <ActionIcon
@@ -53,13 +56,11 @@ export function MessageActions({
         >
           Переслать
         </Menu.Item>
-        {sent &&
-          !message.attachment &&
-          Date.now() - message.timestamp < 86400000 && (
-            <Menu.Item leftSection={<IconEdit size={17} />} onClick={onEdit}>
-              Редактировать
-            </Menu.Item>
-          )}
+        {sent && !message.attachment && now - message.timestamp < 86400000 && (
+          <Menu.Item leftSection={<IconEdit size={17} />} onClick={onEdit}>
+            Редактировать
+          </Menu.Item>
+        )}
         {sent && (
           <Menu.Item
             leftSection={<IconTrash size={17} />}

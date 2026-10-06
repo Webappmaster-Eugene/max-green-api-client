@@ -5,6 +5,8 @@ const STATUS = {
   forbidden: 403,
   limit: 429,
   not_found: 404,
+  provider_quota: 429,
+  provider_rate_limit: 429,
 } as const;
 export class MaxError extends Error {
   readonly status: (typeof STATUS)[MaxErrorCode];

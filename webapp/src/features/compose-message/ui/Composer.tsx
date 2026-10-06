@@ -107,6 +107,11 @@ export function Composer({
             {error}
           </Alert>
         )}
+        {busy && file && (
+          <Text size="xs" role="status">
+            Отправляем файл в MAX…
+          </Text>
+        )}
         <Group gap="xs" align="end" wrap="nowrap">
           {!edit && (
             <FileButton
@@ -172,7 +177,7 @@ export function Composer({
           </ActionIcon>
         </Group>
         <Group justify="space-between">
-          <Text size="10px" c="dimmed">
+          <Text size="10px" c="dimmed" className="desktop-hint">
             {edit
               ? "Редактирование доступно в течение 24 часов"
               : "Shift + Enter — новая строка"}

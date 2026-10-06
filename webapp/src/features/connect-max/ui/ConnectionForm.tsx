@@ -15,6 +15,7 @@ import type { ConnectionFormProps } from "../model/types";
 
 export function ConnectionForm({ busy, onConnect }: ConnectionFormProps) {
   const [apiUrl, setApiUrl] = useState("");
+  const [sameMedia, setSameMedia] = useState(true);
   const [mediaUrl, setMediaUrl] = useState("");
   const [instance, setInstance] = useState("");
   const [token, setToken] = useState("");
@@ -24,7 +25,7 @@ export function ConnectionForm({ busy, onConnect }: ConnectionFormProps) {
     e.preventDefault();
     const parsed = maxConnectSchema.safeParse({
       apiUrl,
-      mediaUrl: mediaUrl.trim() || undefined,
+      mediaUrl: sameMedia ? apiUrl.trim() : mediaUrl.trim() || undefined,
       idInstance: instance,
       apiTokenInstance: token,
       accountConsent: consent,
@@ -56,15 +57,23 @@ export function ConnectionForm({ busy, onConnect }: ConnectionFormProps) {
           onChange={(e) => setApiUrl(e.currentTarget.value)}
           disabled={busy}
         />
-        <TextInput
-          label="Адрес для файлов"
-          description="mediaUrl, нужен для отправки фото и файлов"
-          placeholder="https://3100.media.green-api.com"
-          type="url"
-          value={mediaUrl}
-          onChange={(e) => setMediaUrl(e.currentTarget.value)}
+        <Checkbox
+          label="Адрес для файлов совпадает с адресом API"
+          checked={sameMedia}
+          onChange={(e) => setSameMedia(e.currentTarget.checked)}
           disabled={busy}
         />
+        {!sameMedia && (
+          <TextInput
+            label="Адрес для файлов"
+            description="mediaUrl из кабинета; может совпадать с адресом API"
+            placeholder="https://3100.api.green-api.com"
+            type="url"
+            value={mediaUrl}
+            onChange={(e) => setMediaUrl(e.currentTarget.value)}
+            disabled={busy}
+          />
+        )}
         <TextInput
           label="Номер инстанса"
           description="idInstance"

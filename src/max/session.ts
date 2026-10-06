@@ -3,7 +3,12 @@ import type { z } from "zod";
 import { GreenMaxClient } from "./client.js";
 import { MaxError } from "./error.js";
 import { normalizeHistory, normalizeNotification } from "./message.js";
-import { safeFileName, safeMediaUrl, validateUpload } from "./media.js";
+import {
+  safeFileName,
+  safeMediaUrl,
+  validateUpload,
+  mediaMimeType,
+} from "./media.js";
 import {
   maxConnectSchema,
   maxSendSchema,
@@ -188,6 +193,7 @@ export class MaxSessions {
         contacts: [],
         messages: [],
         canUpload: !!credentials.mediaUrl,
+        historyPages: {},
       };
       const session: MaxSession = {
         client,
@@ -311,7 +317,12 @@ export class MaxSessions {
     } catch (error) {
       if (
         error instanceof MaxError &&
-        ["limit", "forbidden"].includes(error.code)
+        [
+          "limit",
+          "forbidden",
+          "provider_quota",
+          "provider_rate_limit",
+        ].includes(error.code)
       ) {
         s.attempts.delete(requestId);
         throw error;
@@ -393,6 +404,7 @@ export class MaxSessions {
           if (a.quotedMessageId) form.set("quotedMessageId", a.quotedMessageId);
           const result = checked(sendResultSchema, await s.client.upload(form));
           const mediaUrl = safeMediaUrl(result.urlFile);
+          const mimeType = mediaMimeType(file.name, file.type);
           const message: MaxMessageDto = {
             id: result.idMessage,
             chatId: a.chatId,
@@ -401,15 +413,15 @@ export class MaxSessions {
             timestamp: this.now(),
             status: "queued",
             attachment: {
-              kind: file.type.startsWith("image/")
+              kind: mimeType.startsWith("image/")
                 ? "image"
-                : file.type.startsWith("video/")
+                : mimeType.startsWith("video/")
                   ? "video"
-                  : file.type.startsWith("audio/")
+                  : mimeType.startsWith("audio/")
                     ? "audio"
                     : "document",
               fileName: safeFileName(file.name),
-              mimeType: file.type || "application/octet-stream",
+              mimeType,
               available: !!mediaUrl,
             },
             quote: quote
@@ -649,6 +661,7 @@ export class MaxSessions {
     return this.use(owner, connectionId, async (s) => {
       await this.syncDirectory(s);
       s.historyCounts.clear();
+      s.dto.historyPages = {};
       return structuredClone(s.dto);
     });
   }
@@ -671,12 +684,21 @@ export class MaxSessions {
       if (refresh || (s.historyCounts.get(chatId) ?? 0) < count) {
         const result = checked(
           historySchema,
-          await s.client.call("getChatHistory", "POST", { chatId, count }),
+          await s.client.call("getChatHistory", "POST", {
+            chatId,
+            count: Math.min(count + 1, 5000),
+          }),
         );
         for (const row of result.slice(0, count).reverse())
           if (row.chatId === chatId)
             this.addMessage(s, normalizeHistory(row, this.now()));
         s.historyCounts.set(chatId, count);
+        s.dto.historyPages ??= {};
+        s.dto.historyPages[chatId] = {
+          requested: count,
+          received: Math.min(result.length, count),
+          hasMore: result.length > count && count < 5000,
+        };
       }
       chat.unread = 0;
       return structuredClone(s.dto);

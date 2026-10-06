@@ -122,4 +122,13 @@ export const maxSessionSchema = z.object({
   syncWarning: z.string().optional(),
   syncedAt: z.number().finite().optional(),
   canUpload: z.boolean(),
+  historyPages: z
+    .record(
+      z.object({
+        requested: z.number().int(),
+        received: z.number().int(),
+        hasMore: z.boolean(),
+      }),
+    )
+    .optional(),
 });

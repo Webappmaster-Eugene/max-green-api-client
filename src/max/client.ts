@@ -1,4 +1,5 @@
 import { MaxError } from "./error.js";
+import { setTimeout as delay } from "node:timers/promises";
 import type { MaxConnectInput } from "../../types/max.js";
 
 export function greenApiOrigin(raw: string, allowMedia = false): string {
@@ -76,6 +77,14 @@ export class GreenMaxClient {
         body: body === undefined ? undefined : JSON.stringify(body),
       },
       method === "deleteMessage",
+      [
+        "getStateInstance",
+        "getSettings",
+        "getChats",
+        "getContacts",
+        "getChatHistory",
+        "checkAccount",
+      ].includes(method),
     );
   }
 
@@ -83,6 +92,8 @@ export class GreenMaxClient {
     url: string,
     init: RequestInit,
     empty = false,
+    retryRead = false,
+    attempt = 0,
   ): Promise<unknown> {
     let response: Response;
     try {
@@ -102,14 +113,38 @@ export class GreenMaxClient {
     }
     if (!response.ok) {
       const status = response.status;
+      if (status === 429 && retryRead && attempt < 2) {
+        const seconds = Number(response.headers.get("Retry-After"));
+        const wait =
+          Number.isFinite(seconds) && seconds > 0
+            ? Math.min(seconds, 5) * 1000
+            : 1200 * (attempt + 1);
+        await response.body?.cancel();
+        try {
+          await delay(wait, undefined, { signal: this.abort.signal });
+        } catch {
+          throw new MaxError("Подключение отменено.", "unavailable");
+        }
+        return this.request(url, init, empty, retryRead, attempt + 1);
+      }
       if ([401, 403].includes(status))
         throw new MaxError(
           "GREEN-API отказал в доступе. Проверьте ключ и ограничения аккаунта.",
           "forbidden",
         );
-      if ([429, 466, 469].includes(status))
+      if (status === 429)
         throw new MaxError(
-          "Достигнут лимит GREEN-API. Проверьте тариф и повторите позже.",
+          "GREEN-API временно ограничил частоту запросов (429). Закройте другие клиенты этого инстанса и повторите через несколько секунд.",
+          "provider_rate_limit",
+        );
+      if (status === 466)
+        throw new MaxError(
+          "Исчерпана квота GREEN-API (466). Проверьте ограничения инстанса в кабинете: повтор через несколько секунд её не восстановит.",
+          "provider_quota",
+        );
+      if (status === 469)
+        throw new MaxError(
+          "GREEN-API отклонил запрос с кодом 469. Проверьте состояние инстанса в кабинете или обратитесь в поддержку GREEN-API.",
           "limit",
         );
       throw new MaxError(
